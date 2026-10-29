@@ -3,7 +3,7 @@ import re
 import shlex
 
 from autorecon.plugins import ServiceScan
-from platformdirs import user_data_dir
+from platformdirs import user_cache_dir
 
 
 ANSI_ESCAPE = re.compile(r'\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))')
@@ -37,7 +37,7 @@ class SSHAuthenticatedHostChecks(ServiceScan):
 		identity_file = self.get_option('identity-file')
 		linpeas_script = self.get_option('linpeas-script')
 		if self.get_option('linpeas') and not linpeas_script:
-			linpeas_script = os.path.join(user_data_dir('AutoRecon'), 'linpeas.sh')
+			linpeas_script = os.path.join(user_cache_dir('AutoRecon'), 'linpeas.sh')
 		if not username and not identity_file:
 			if linpeas_script:
 				service.warn('SSH username and identity file are required to run LinPEAS.')
