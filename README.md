@@ -175,6 +175,20 @@ Assuming you did not modify any of the content in the AutoRecon directory, this 
 
 A plugin update process is in the works. Until then, after upgrading, remove the ~/.local/share/AutoRecon directory and run AutoRecon with any argument to repopulate with the latest files.
 
+### Authenticated SSH host checks
+
+When AutoRecon finds an SSH service, it can log in with an SSH key and collect read-only host information: identity, hostname, operating system, uptime, network addresses and routes, listening sockets, disk usage, and memory. Supply both options to enable these checks:
+
+```bash
+autorecon --ssh-authenticated-host-checks.username audit --ssh-authenticated-host-checks.identity-file ~/.ssh/audit_key 192.0.2.10
+```
+
+The SSH host key must already be trusted in your normal `known_hosts` file. The plugin uses batch mode and does not prompt for a password or passphrase. It writes results and SSH errors to separate files under the SSH service scan directory. Without both options, the plugin does not connect or run host checks. Only use credentials and targets you are authorized to audit.
+
+If the local SSH configuration is unusable, set `--ssh-authenticated-host-checks.config-file /dev/null` to bypass it.
+
+To run LinPEAS during the authenticated SSH scan, download `linpeas.sh` from the [official PEASS-ng releases](https://github.com/peass-ng/PEASS-ng/releases) to the scanning machine and add `--ssh-authenticated-host-checks.linpeas-script /path/to/linpeas.sh`. AutoRecon streams the local script to `sh` over SSH and does not leave a script file on the target. It saves readable plain text as `*_ssh_linpeas.txt`, the original output as `*_ssh_linpeas_raw.txt`, and SSH errors separately. LinPEAS is only run when this option is supplied; its output can contain sensitive host data. The LinPEAS SSH command has a 300-second limit by default; change it with `--ssh-authenticated-host-checks.linpeas-timeout SECONDS`. To limit LinPEAS to a section, add `--ssh-authenticated-host-checks.linpeas-section system_information`.
+
 ## Usage
 
 AutoRecon uses Python 3 specific functionality and does not support Python 2.
