@@ -2,6 +2,21 @@
 
 This is a fork from https://github.com/AutoRecon/AutoRecon.git
 
+## Prerequisites (Kali Linux)
+
+AutoRecon calls external scanning tools. Install them once with `apt`; `pipx` and `bash install.sh` do not install these system packages. The command below includes `pipx`, which the installer requires.
+
+```bash
+sudo apt update
+sudo apt install pipx seclists curl dnsrecon enum4linux feroxbuster gobuster impacket-scripts nbtscan nikto nmap onesixtyone oscanner redis-tools smbclient smbmap snmp sslscan sipvicious tnscmd10g whatweb
+```
+
+If you use the optional `ffuf` directory example or the manual Hydra example below, install those tools too:
+
+```bash
+sudo apt install ffuf hydra
+```
+
 ## Install or update this fork
 
 From a clone of this repository, run:
@@ -10,7 +25,7 @@ From a clone of this repository, run:
 bash install.sh
 ```
 
-The script requires `pipx` and `curl`. It installs this checkout with `pipx`, refreshes the SSH plugin in an existing AutoRecon installation, and downloads the latest `linpeas.sh` from the [official PEASS-ng release](https://github.com/peass-ng/PEASS-ng/releases/latest) into your user cache. Re-run `bash install.sh` after pulling repository updates to refresh AutoRecon and LinPEAS. The cached script is only used when you enable it for an authenticated scan.
+After installing the prerequisites, the script installs this checkout with `pipx`, refreshes the SSH plugin in an existing AutoRecon installation, and downloads the latest `linpeas.sh` from the [official PEASS-ng release](https://github.com/peass-ng/PEASS-ng/releases/latest) into your user cache. Re-run `bash install.sh` after pulling repository updates to refresh AutoRecon and LinPEAS. The cached script is only used when you enable it for an authenticated scan.
 
 ## Example commands
 
