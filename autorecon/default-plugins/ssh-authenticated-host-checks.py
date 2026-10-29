@@ -29,7 +29,7 @@ class SSHAuthenticatedHostChecks(ServiceScan):
 		self.add_option('config-file', help='Optional SSH client config file. Use /dev/null to ignore a broken system SSH config.')
 		self.add_true_option('linpeas', help='Run the LinPEAS copy downloaded by install.sh. Requires SSH credentials.')
 		self.add_option('linpeas-script', help='Optional custom local path to linpeas.sh. Overrides the cached copy when --ssh-authenticated-host-checks.linpeas is set.')
-		self.add_option('linpeas-timeout', default='300', help='Maximum LinPEAS runtime in seconds. Default: 300.')
+		self.add_option('linpeas-timeout', help='Optional maximum LinPEAS runtime in seconds. No limit by default.')
 		self.add_option('linpeas-section', help='Optional LinPEAS -o section name, such as system_information.')
 
 	async def run(self, service):
@@ -93,13 +93,15 @@ class SSHAuthenticatedHostChecks(ServiceScan):
 			if not os.path.isfile(linpeas_script) or not os.access(linpeas_script, os.R_OK):
 				service.warn('LinPEAS script is not a readable file: ' + linpeas_script)
 				return
-			try:
-				linpeas_timeout = int(self.get_option('linpeas-timeout'))
-				if linpeas_timeout < 1:
-					raise ValueError
-			except (TypeError, ValueError):
-				service.warn('LinPEAS timeout must be a positive number of seconds.')
-				return
+			linpeas_timeout = self.get_option('linpeas-timeout')
+			if linpeas_timeout is not None:
+				try:
+					linpeas_timeout = int(linpeas_timeout)
+					if linpeas_timeout < 1:
+						raise ValueError
+				except (TypeError, ValueError):
+					service.warn('LinPEAS timeout must be a positive number of seconds.')
+					return
 			linpeas_section = self.get_option('linpeas-section')
 			if linpeas_section and not re.fullmatch(r'[A-Za-z0-9_,]+', linpeas_section):
 				service.warn('LinPEAS section must contain only letters, numbers, underscores, and commas.')
@@ -109,7 +111,9 @@ class SSHAuthenticatedHostChecks(ServiceScan):
 			remote_linpeas_command = 'sh -s -- -q'
 			if linpeas_section:
 				remote_linpeas_command += ' -o ' + shlex.quote(linpeas_section)
-			linpeas_arguments = ['timeout', '-k', '5s', str(linpeas_timeout) + 's'] + arguments + [remote_linpeas_command]
+			linpeas_arguments = arguments + [remote_linpeas_command]
+			if linpeas_timeout is not None:
+				linpeas_arguments = ['timeout', '-k', '5s', str(linpeas_timeout) + 's'] + linpeas_arguments
 			linpeas_command = ' '.join(shlex.quote(argument) for argument in linpeas_arguments)
 			linpeas_command += ' < ' + shlex.quote(linpeas_script)
 			linpeas_command = linpeas_command.replace('{', '{{').replace('}', '}}')
@@ -123,7 +127,7 @@ class SSHAuthenticatedHostChecks(ServiceScan):
 				write_readable_linpeas(stdout.outfile, readable_path)
 			except OSError as ex:
 				service.warn('Could not write readable LinPEAS output: ' + str(ex))
-			if process.returncode == 124:
+			if linpeas_timeout is not None and process.returncode == 124:
 				service.warn('LinPEAS over SSH reached its time limit; output may be incomplete.')
 			elif process.returncode:
 				service.warn('LinPEAS over SSH failed; see the LinPEAS error output.')
