@@ -3,6 +3,7 @@ import re
 import shlex
 
 from autorecon.plugins import ServiceScan
+from platformdirs import user_data_dir
 
 
 ANSI_ESCAPE = re.compile(r'\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))')
@@ -26,7 +27,8 @@ class SSHAuthenticatedHostChecks(ServiceScan):
 		self.add_option('username', help='SSH username for authenticated host checks. Requires --ssh-authenticated-host-checks.identity-file.')
 		self.add_option('identity-file', help='Path to a private key for authenticated host checks. Requires --ssh-authenticated-host-checks.username.')
 		self.add_option('config-file', help='Optional SSH client config file. Use /dev/null to ignore a broken system SSH config.')
-		self.add_option('linpeas-script', help='Optional local path to linpeas.sh. Stream it over SSH and save its output separately.')
+		self.add_true_option('linpeas', help='Run the LinPEAS copy downloaded by install.sh. Requires SSH credentials.')
+		self.add_option('linpeas-script', help='Optional custom local path to linpeas.sh. Overrides the cached copy when --ssh-authenticated-host-checks.linpeas is set.')
 		self.add_option('linpeas-timeout', default='300', help='Maximum LinPEAS runtime in seconds. Default: 300.')
 		self.add_option('linpeas-section', help='Optional LinPEAS -o section name, such as system_information.')
 
@@ -34,6 +36,8 @@ class SSHAuthenticatedHostChecks(ServiceScan):
 		username = self.get_option('username')
 		identity_file = self.get_option('identity-file')
 		linpeas_script = self.get_option('linpeas-script')
+		if self.get_option('linpeas') and not linpeas_script:
+			linpeas_script = os.path.join(user_data_dir('AutoRecon'), 'linpeas.sh')
 		if not username and not identity_file:
 			if linpeas_script:
 				service.warn('SSH username and identity file are required to run LinPEAS.')
