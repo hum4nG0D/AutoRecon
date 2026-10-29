@@ -2,6 +2,16 @@
 
 This is a fork from https://github.com/AutoRecon/AutoRecon.git
 
+## Install or update this fork
+
+From a clone of this repository, run:
+
+```bash
+bash install.sh
+```
+
+The script requires `pipx` and `curl`. It installs this checkout with `pipx`, refreshes the SSH plugin in an existing AutoRecon installation, and downloads the latest `linpeas.sh` from the [official PEASS-ng release](https://github.com/peass-ng/PEASS-ng/releases/latest) into your user cache. Re-run `bash install.sh` after pulling repository updates to refresh AutoRecon and LinPEAS. The cached script is only used when you enable it for an authenticated scan.
+
 ## Example commands
 
 Replace the example target, username, key, and wordlist paths with your own. Run scans only against systems you are authorized to assess.
@@ -26,13 +36,13 @@ autorecon 192.0.2.10 \
 
 ### Authenticated SSH scan with LinPEAS
 
-Download `linpeas.sh` to your scanning machine, then provide its local path. AutoRecon saves readable plain text, the original output, and errors separately.
+Use the LinPEAS copy downloaded by `bash install.sh` with the `--ssh-authenticated-host-checks.linpeas` flag. AutoRecon saves readable plain text, the original output, and errors separately. To use your own script instead, pass `--ssh-authenticated-host-checks.linpeas-script /path/to/linpeas.sh`.
 
 ```bash
 autorecon 192.0.2.10 \
   --ssh-authenticated-host-checks.username audit \
   --ssh-authenticated-host-checks.identity-file ~/.ssh/audit_key \
-  --ssh-authenticated-host-checks.linpeas-script /path/to/linpeas.sh
+  --ssh-authenticated-host-checks.linpeas
 ```
 
 Limit LinPEAS to one section and allow up to 600 seconds:
@@ -41,7 +51,7 @@ Limit LinPEAS to one section and allow up to 600 seconds:
 autorecon 192.0.2.10 \
   --ssh-authenticated-host-checks.username audit \
   --ssh-authenticated-host-checks.identity-file ~/.ssh/audit_key \
-  --ssh-authenticated-host-checks.linpeas-script /path/to/linpeas.sh \
+  --ssh-authenticated-host-checks.linpeas \
   --ssh-authenticated-host-checks.linpeas-section system_information \
   --ssh-authenticated-host-checks.linpeas-timeout 600
 ```
