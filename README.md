@@ -51,7 +51,7 @@ autorecon 192.0.2.10 \
 
 ### Authenticated SSH scan with LinPEAS
 
-Use the LinPEAS copy downloaded by `bash install.sh` with the `--ssh-authenticated-host-checks.linpeas` flag. AutoRecon saves readable plain text, the original output, and errors separately. To use your own script instead, pass `--ssh-authenticated-host-checks.linpeas-script /path/to/linpeas.sh`.
+Use the LinPEAS copy downloaded by `bash install.sh` with the `--ssh-authenticated-host-checks.linpeas` flag. AutoRecon saves readable plain text, the original output, and errors separately. LinPEAS has no time limit by default. To use your own script instead, pass `--ssh-authenticated-host-checks.linpeas-script /path/to/linpeas.sh`.
 
 ```bash
 autorecon 192.0.2.10 \
@@ -60,7 +60,7 @@ autorecon 192.0.2.10 \
   --ssh-authenticated-host-checks.linpeas
 ```
 
-Limit LinPEAS to one section and allow up to 600 seconds:
+Optional: limit LinPEAS to one section and set a 600-second time limit:
 
 ```bash
 autorecon 192.0.2.10 \
