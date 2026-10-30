@@ -28,6 +28,7 @@ class SSHAuthenticatedHostChecks(ServiceScan):
 		self.add_option('identity-file', help='Path to a private key for authenticated host checks. Requires --ssh-authenticated-host-checks.username.')
 		self.add_option('config-file', help='Optional SSH client config file. Use /dev/null to ignore a broken system SSH config.')
 		self.add_true_option('linpeas', help='Run the LinPEAS copy downloaded by install.sh. Requires SSH credentials.')
+		self.add_true_option('linpeas-only', help='Run only LinPEAS, skipping the built-in SSH host checks. Requires --ssh-authenticated-host-checks.linpeas.')
 		self.add_option('linpeas-script', help='Optional custom local path to linpeas.sh. Overrides the cached copy when --ssh-authenticated-host-checks.linpeas is set.')
 		self.add_option('linpeas-timeout', help='Optional maximum LinPEAS runtime in seconds. No limit by default.')
 		self.add_option('linpeas-section', help='Optional LinPEAS -o section name, such as system_information.')
@@ -36,6 +37,10 @@ class SSHAuthenticatedHostChecks(ServiceScan):
 		username = self.get_option('username')
 		identity_file = self.get_option('identity-file')
 		linpeas_script = self.get_option('linpeas-script')
+		linpeas_only = self.get_option('linpeas-only')
+		if linpeas_only and not self.get_option('linpeas'):
+			service.warn('LinPEAS-only mode requires --ssh-authenticated-host-checks.linpeas.')
+			return
 		if self.get_option('linpeas') and not linpeas_script:
 			linpeas_script = os.path.join(user_cache_dir('AutoRecon'), 'linpeas.sh')
 		if not username and not identity_file:
@@ -80,13 +85,14 @@ class SSHAuthenticatedHostChecks(ServiceScan):
 		command = ' '.join(shlex.quote(argument) for argument in arguments + [remote_command])
 		# service.execute formats command strings, so preserve literal braces in paths.
 		command = command.replace('{', '{{').replace('}', '}}')
-		process, _, _ = await service.execute(
-			command,
-			outfile='{protocol}_{port}_ssh_authenticated_host_checks.txt',
-			errfile='{protocol}_{port}_ssh_authenticated_host_checks_errors.txt',
-		)
-		if process.returncode:
-			service.warn('Authenticated SSH host checks failed; see the SSH error output.')
+		if not linpeas_only:
+			process, _, _ = await service.execute(
+				command,
+				outfile='{protocol}_{port}_ssh_authenticated_host_checks.txt',
+				errfile='{protocol}_{port}_ssh_authenticated_host_checks_errors.txt',
+			)
+			if process.returncode:
+				service.warn('Authenticated SSH host checks failed; see the SSH error output.')
 
 		if linpeas_script:
 			linpeas_script = os.path.abspath(os.path.expanduser(linpeas_script))
@@ -125,6 +131,7 @@ class SSHAuthenticatedHostChecks(ServiceScan):
 			readable_path = os.path.join(os.path.dirname(stdout.outfile), str(service.protocol) + '_' + str(service.port) + '_ssh_linpeas.txt')
 			try:
 				write_readable_linpeas(stdout.outfile, readable_path)
+				service.target.running_tasks[service.tag() + '/' + self.slug]['outputs'].append(readable_path)
 			except OSError as ex:
 				service.warn('Could not write readable LinPEAS output: ' + str(ex))
 			if linpeas_timeout is not None and process.returncode == 124:

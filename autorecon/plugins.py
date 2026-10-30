@@ -226,6 +226,7 @@ class AutoRecon(object):
 		self.pending_targets = []
 		self.scanning_targets = []
 		self.completed_targets = []
+		self.ai_tasks = []
 		self.plugins = {}
 		self.__slug_regex = re.compile('^[a-z0-9\-]+$')
 		self.plugin_types = {'port':[], 'service':[], 'report':[]}

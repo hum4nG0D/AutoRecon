@@ -291,7 +291,7 @@ async def port_scan(plugin, target):
 		start_time = time.time()
 
 		async with target.lock:
-			target.running_tasks[plugin.slug] = {'plugin': plugin, 'processes': [], 'start': start_time}
+			target.running_tasks[plugin.slug] = {'plugin': plugin, 'processes': [], 'outputs': [], 'start': start_time}
 
 		try:
 			result = await plugin.run(target)
@@ -326,7 +326,9 @@ async def port_scan(plugin, target):
 		elapsed_time = calculate_elapsed_time(start_time)
 
 		async with target.lock:
+			outputs = target.running_tasks[plugin.slug]['outputs'][:]
 			target.running_tasks.pop(plugin.slug, None)
+		queue_ai_review(target, outputs)
 
 		info('Port scan {bblue}' + plugin.name + ' {green}(' + plugin.slug + '){rst} against {byellow}' + target.address + '{rst} finished in ' + elapsed_time, verbosity=2)
 		return {'type':'port', 'plugin':plugin, 'result':result}
@@ -415,7 +417,7 @@ async def service_scan(plugin, service):
 			start_time = time.time()
 
 			async with service.target.lock:
-				service.target.running_tasks[tag] = {'plugin': plugin, 'processes': [], 'start': start_time}
+				service.target.running_tasks[tag] = {'plugin': plugin, 'processes': [], 'outputs': [], 'start': start_time}
 
 			try:
 				result = await plugin.run(service)
@@ -450,7 +452,9 @@ async def service_scan(plugin, service):
 			elapsed_time = calculate_elapsed_time(start_time)
 
 			async with service.target.lock:
+				outputs = service.target.running_tasks[tag]['outputs'][:]
 				service.target.running_tasks.pop(tag, None)
+			queue_ai_review(service.target, outputs)
 
 			info('Service scan {bblue}' + plugin.name + ' {green}(' + tag + '){rst} against {byellow}' + service.target.address + '{rst} finished in ' + elapsed_time, verbosity=2)
 			return {'type':'service', 'plugin':plugin, 'result':result}
@@ -469,6 +473,32 @@ async def generate_report(plugin, targets):
 			error_text = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb)[-2:])
 			raise Exception(cprint('Error: Report plugin {bblue}' + plugin.name + ' {green}(' + plugin.slug + '){rst} produced an exception:\n\n' + error_text, color=Fore.RED, char='!', printmsg=False))
 
+def queue_ai_review(target, paths):
+	if target.autorecon.args.ai_review and paths:
+		target.ai_tasks.append(asyncio.create_task(review_scan_outputs(target, paths)))
+
+
+async def review_scan_outputs(target, paths):
+	async with target.ai_lock:
+		try:
+			await asyncio.get_running_loop().run_in_executor(None, target.ai_report.review_paths, paths)
+		except Exception as ex:
+			error('AI review for ' + target.address + ' stopped: ' + str(ex) + '. Completed reviews remain in ai-report.md.')
+
+
+async def review_target_with_ai(target):
+	"""Review remaining files and summarize after scans finish."""
+	try:
+		if target.ai_tasks:
+			await asyncio.gather(*target.ai_tasks)
+		async with target.ai_lock:
+			await asyncio.get_running_loop().run_in_executor(None, target.ai_report.review_remaining)
+			report_path = await asyncio.get_running_loop().run_in_executor(None, target.ai_report.finish)
+		if report_path:
+			info('AI report for {byellow}' + target.address + '{rst}: ' + str(report_path))
+	except Exception as ex:
+		error('AI review for ' + target.address + ' stopped: ' + str(ex) + '. Scan results remain available.')
+
 async def scan_target(target):
 	os.makedirs(os.path.abspath(config['output']), exist_ok=True)
 
@@ -483,6 +513,9 @@ async def scan_target(target):
 	scandir = os.path.join(basedir, 'scans')
 	target.scandir = scandir
 	os.makedirs(scandir, exist_ok=True)
+	if target.autorecon.args.ai_review:
+		from autorecon.ai_report import IncrementalReport
+		target.ai_report = IncrementalReport(basedir, target.autorecon.args.ai_model, target.autorecon.args.ai_max_chunks)
 
 	os.makedirs(os.path.join(scandir, 'xml'), exist_ok=True)
 
@@ -846,6 +879,8 @@ async def scan_target(target):
 		warn('{byellow}Scanning target ' + target.address + ' took longer than the specified target period (' + str(config['target_timeout']) + ' min). Cancelling scans and moving to next target.{rst}')
 	else:
 		info('Finished scanning target {byellow}' + target.address + '{rst} in ' + elapsed_time)
+		if target.autorecon.args.ai_review:
+			target.autorecon.ai_tasks.append(asyncio.create_task(review_target_with_ai(target)))
 
 	async with autorecon.lock:
 		autorecon.completed_targets.append(target)
@@ -883,6 +918,12 @@ async def run():
 	parser.add_argument('--port-scans', action='store', type=str, metavar='PLUGINS', help='Override --tags / --exclude-tags for the listed PortScan plugins (comma separated). Default: %(default)s')
 	parser.add_argument('--service-scans', action='store', type=str, metavar='PLUGINS', help='Override --tags / --exclude-tags for the listed ServiceScan plugins (comma separated). Default: %(default)s')
 	parser.add_argument('--reports', action='store', type=str, metavar='PLUGINS', help='Override --tags / --exclude-tags for the listed Report plugins (comma separated). Default: %(default)s')
+	parser.add_argument('--linpeas', action='store_true', help='Run LinPEAS during a full scan. Use with -u USER -i KEY, or the equivalent SSH plugin options.')
+	parser.add_argument('-u', '--ssh-user', help='SSH username for --linpeas.')
+	parser.add_argument('-i', '--ssh-identity', help='SSH private key for --linpeas.')
+	parser.add_argument('--ai', '--ai-review', dest='ai_review', action='store_true', help='Sign in to ChatGPT if needed, review each completed scan, and summarize after all scans for a target finish.')
+	parser.add_argument('--ai-model', action='store', metavar='MODEL', help='Optional model slug for --ai-review. Defaults to the first available ChatGPT model.')
+	parser.add_argument('--ai-max-chunks', action='store', type=int, default=100, metavar='N', help='Maximum AI section requests per target when --ai is enabled. Default: 100.')
 	parser.add_argument('--plugins-dir', action='store', type=str, help='The location of the plugins directory. Default: %(default)s')
 	parser.add_argument('--add-plugins-dir', action='store', type=str, metavar='PLUGINS_DIR', help='The location of an additional plugins directory to add to the main one. Default: %(default)s')
 	parser.add_argument('-l', '--list', action='store', nargs='?', const='plugins', metavar='TYPE', help='List all plugins or plugins of a specific type. e.g. --list, --list port, --list service')
@@ -1145,6 +1186,11 @@ async def run():
 	parser.add_argument('-h', '--help', action='help', default=argparse.SUPPRESS, help='Show this help message and exit.')
 	parser.error = lambda s: fail(s[0].upper() + s[1:])
 	args = parser.parse_args()
+	from autorecon.linpeas_options import apply_linpeas_options
+	try:
+		apply_linpeas_options(args)
+	except ValueError as ex:
+		fail('Error: ' + str(ex))
 
 	args_dict = vars(args)
 	for key in args_dict:
@@ -1154,6 +1200,25 @@ async def run():
 				continue
 			config[key] = args_dict[key]
 	autorecon.args = args
+	if args.ai_review and not args.list and not args.version:
+		from autorecon.ai_auth import session, login, access_token
+		from autorecon.ai_report import available_models
+		if args.ai_max_chunks < 1:
+			fail('Error: --ai-max-chunks must be positive.')
+		try:
+			loop = asyncio.get_running_loop()
+			if not session():
+				info('ChatGPT sign-in is needed for the requested AI review.')
+				await loop.run_in_executor(None, login)
+			await loop.run_in_executor(None, access_token)
+			if not args.ai_model:
+				models = await loop.run_in_executor(None, available_models)
+				if not models:
+					fail('Error: No ChatGPT models are available for AI review.')
+				args.ai_model = models[0][0]
+				info('Using ChatGPT model {bblue}' + args.ai_model + '{rst} for AI review.')
+		except Exception as ex:
+			fail('Error: ChatGPT sign-in or model selection failed: ' + str(ex))
 
 	if args.list:
 		type = args.list.lower()
@@ -1624,6 +1689,9 @@ async def run():
 		elapsed_time = calculate_elapsed_time(start_time)
 		warn('{byellow}AutoRecon took longer than the specified timeout period (' + str(config['timeout']) + ' min). Cancelling all scans and exiting.{rst}')
 	else:
+		# AI reviews are separate from target scanning so they do not occupy scan slots.
+		if autorecon.ai_tasks:
+			await asyncio.gather(*autorecon.ai_tasks)
 		while len(asyncio.all_tasks()) > 1: # this code runs in the main() task so it will be the only task left running
 			await asyncio.sleep(1)
 

@@ -12,6 +12,7 @@ packages = [
 [tool.poetry.dependencies]
 python = "^3.8"
 platformdirs = "^4.3.6"
+PyJWT = {version = ">=2.8,<3", extras = ["crypto"]}
 colorama = "^0.4.5"
 impacket = "^0.10.0"
 psutil = "^5.9.4"
@@ -23,6 +24,8 @@ Unidecode = "^1.3.1"
 
 [tool.poetry.scripts]
 autorecon = "autorecon.main:main"
+autorecon-ai = "autorecon.ai_cli:main"
+autorecon-linpeas = "autorecon.linpeas_cli:main"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

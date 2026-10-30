@@ -1,7 +1,16 @@
-import asyncio, inspect, os
+import asyncio, inspect, os, shlex
 from typing import final
 from autorecon.config import config
 from autorecon.io import e, info, warn, error
+
+
+def command_text_outputs(command):
+	"""Find text files written directly by Nmap rather than through execute()."""
+	try:
+		arguments = shlex.split(command)
+	except ValueError:
+		return []
+	return [arguments[index + 1] for index, argument in enumerate(arguments[:-1]) if argument == '-oN']
 
 class Target:
 
@@ -20,6 +29,8 @@ class Target:
 		self.services = []
 		self.scans = {'ports':{}, 'services':{}}
 		self.running_tasks = {}
+		self.ai_tasks = []
+		self.ai_lock = asyncio.Lock()
 
 	async def add_service(self, service):
 		async with self.lock:
@@ -86,6 +97,8 @@ class Target:
 			future_outfile = os.path.join(target.scandir, e(future_outfile))
 
 		target.scans['ports'][tag]['commands'].append([cmd, outfile if outfile is not None else future_outfile, errfile])
+		target.running_tasks[tag]['outputs'].extend(path for path in [outfile, future_outfile] if path)
+		target.running_tasks[tag]['outputs'].extend(command_text_outputs(cmd))
 
 		async with target.lock:
 			with open(os.path.join(target.scandir, '_commands.log'), 'a') as file:
@@ -207,6 +220,8 @@ class Service:
 			future_outfile = os.path.join(scandir, e(future_outfile))
 
 		target.scans['services'][self][plugin_tag]['commands'].append([cmd, outfile if outfile is not None else future_outfile, errfile])
+		target.running_tasks[tag]['outputs'].extend(path for path in [outfile, future_outfile] if path)
+		target.running_tasks[tag]['outputs'].extend(command_text_outputs(cmd))
 
 		async with target.lock:
 			with open(os.path.join(target.scandir, '_commands.log'), 'a') as file:
