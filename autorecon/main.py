@@ -495,7 +495,8 @@ async def review_target_with_ai(target):
 			await asyncio.get_running_loop().run_in_executor(None, target.ai_report.review_remaining)
 			report_path = await asyncio.get_running_loop().run_in_executor(None, target.ai_report.finish)
 		if report_path:
-			info('AI report for {byellow}' + target.address + '{rst}: ' + str(report_path))
+			info('{bmagenta}AI review{rst}: Saved report for {byellow}{address}{rst}: {report_path}',
+				address=target.address, report_path=str(report_path))
 	except Exception as ex:
 		error('AI review for ' + target.address + ' stopped: ' + str(ex) + '. Scan results remain available.')
 
@@ -515,7 +516,8 @@ async def scan_target(target):
 	os.makedirs(scandir, exist_ok=True)
 	if target.autorecon.args.ai_review:
 		from autorecon.ai_report import IncrementalReport
-		target.ai_report = IncrementalReport(basedir, target.autorecon.args.ai_model, target.autorecon.args.ai_max_chunks)
+		target.ai_report = IncrementalReport(basedir, target.autorecon.args.ai_model,
+			target.autorecon.args.ai_max_chunks, target_address=target.address)
 
 	os.makedirs(os.path.join(scandir, 'xml'), exist_ok=True)
 
@@ -1202,7 +1204,7 @@ async def run():
 		try:
 			loop = asyncio.get_running_loop()
 			if not session():
-				info('ChatGPT sign-in is needed for the requested AI review.')
+				info('{bmagenta}AI review{rst}: ChatGPT sign-in is needed.')
 				await loop.run_in_executor(None, login)
 			await loop.run_in_executor(None, access_token)
 			if not args.ai_model:
@@ -1210,7 +1212,7 @@ async def run():
 				if not models:
 					fail('Error: No ChatGPT models are available for AI review.')
 				args.ai_model = models[0][0]
-				info('Using ChatGPT model {bblue}' + args.ai_model + '{rst} for AI review.')
+				info('{bmagenta}AI review{rst}: Using ChatGPT model {bblue}{model}{rst}.', model=args.ai_model)
 		except Exception as ex:
 			fail('Error: ChatGPT sign-in or model selection failed: ' + str(ex))
 

@@ -10,6 +10,7 @@ from pathlib import Path
 import requests
 
 from autorecon.ai_auth import ChatGPTAuthError, RESOURCE, access_token
+from autorecon.io import info
 
 
 CHUNK_SIZE = 20000
@@ -238,7 +239,8 @@ def _review_input(root, input_text, model, max_chunks):
 	_write_reviews(report_dir, model, section_notes)
 	_write_pending_report(report_path, False)
 	for index, (name, part, total, chunk) in enumerate(chunks, 1):
-		print('Reviewing {} (part {}/{}, request {}/{})...'.format(name, part, total, index, len(chunks)), flush=True)
+		info('{bmagenta}AI review{rst}: Reviewing {name} (part {part}/{total}, request {index}/{request_count})...',
+			name=name, part=part, total=total, index=index, request_count=len(chunks), flush=True)
 		note = _response(access_token(), model,
 			SECTION_INSTRUCTIONS,
 			'Scan section: {} (part {}/{})\n\n{}'.format(name, part, total, chunk))
@@ -247,7 +249,7 @@ def _review_input(root, input_text, model, max_chunks):
 		# Keep completed reviews available even if a later request hits a plan limit.
 		_write_reviews(report_dir, model, section_notes)
 		_write_pending_report(report_path, True)
-	print('Consolidating findings...', flush=True)
+	info('{bmagenta}AI review{rst}: Consolidating findings...', flush=True)
 	final = _response(access_token(), model,
 		FINAL_INSTRUCTIONS,
 		'Completed section reviews:\n\n' + '\n\n'.join(partials))
@@ -287,10 +289,11 @@ def review_completed_scan(result_dir, model, max_chunks=24):
 class IncrementalReport:
 	"""Save scan reviews as they finish, then write a short final report."""
 
-	def __init__(self, result_dir, model, max_chunks=100):
+	def __init__(self, result_dir, model, max_chunks=100, target_address=None):
 		self.root = Path(result_dir).expanduser().resolve()
 		self.model = model
 		self.max_chunks = max_chunks
+		self.target_address = target_address
 		self.reviewed = set()
 		self.notes = []
 		self.parts = []
@@ -327,7 +330,8 @@ class IncrementalReport:
 				self.preview.append(input_text)
 				_write_private(self.report_dir / 'ai-report-input.txt', ''.join(self.preview))
 				for name, part, total, chunk in chunks:
-					print('Reviewing completed scan {} (part {}/{})...'.format(name, part, total), flush=True)
+					self._progress('Reviewing completed scan {name} (part {part}/{total})...',
+						name=name, part=part, total=total)
 					note = _response(access_token(), self.model,
 						SECTION_INSTRUCTIONS,
 						'Scan section: {} (part {}/{})\n\n{}'.format(name, part, total, chunk))
@@ -348,7 +352,7 @@ class IncrementalReport:
 		if not self.parts:
 			_write_final_report(self.report_path, 'No eligible scan text was produced in this run.')
 			return self.report_path
-		print('Consolidating AI findings...', flush=True)
+		self._progress('Consolidating findings...')
 		final = _response(access_token(), self.model,
 			FINAL_INSTRUCTIONS,
 			'Completed section reviews:\n\n' + '\n\n'.join(self.parts))
@@ -358,3 +362,10 @@ class IncrementalReport:
 	def _write_pending(self):
 		_write_reviews(self.report_dir, self.model, self.notes)
 		_write_pending_report(self.report_path, bool(self.notes))
+
+	def _progress(self, message, **values):
+		label = '{bmagenta}AI review{rst}'
+		if self.target_address:
+			label += ' for {target_address}'
+			values['target_address'] = self.target_address
+		info(label + ': ' + message, flush=True, **values)

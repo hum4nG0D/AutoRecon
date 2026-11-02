@@ -4,8 +4,12 @@ import argparse
 import sys
 import webbrowser
 
+import colorama
 import jwt
 import requests
+
+# io.py captures its default output stream when imported.
+colorama.init()
 
 from autorecon.ai_auth import ChatGPTAuthError, login, logout, session
 from autorecon.ai_report import available_models, create_report

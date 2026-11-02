@@ -19,7 +19,7 @@ def e(*args, frame_index=1, **kvargs):
 def fformat(s):
 	return e(s, frame_index=3)
 
-def cprint(*args, color=Fore.RESET, char='*', sep=' ', end='\n', frame_index=1, file=sys.stdout, printmsg=True, verbosity=0, **kvargs):
+def cprint(*args, color=Fore.RESET, char='*', sep=' ', end='\n', frame_index=1, file=sys.stdout, printmsg=True, verbosity=0, flush=False, **kvargs):
 	if printmsg and verbosity > config['verbose']:
 		return ''
 	frame = sys._getframe(frame_index)
@@ -66,7 +66,7 @@ def cprint(*args, color=Fore.RESET, char='*', sep=' ', end='\n', frame_index=1, 
 			unfmt = unfmt.replace('{' + key + '}', '{{' + key + '}}')
 
 	if printmsg:
-		print(fmted, sep=sep, end=end, file=file)
+		print(fmted, sep=sep, end=end, file=file, flush=flush)
 	else:
 		return fmted
 

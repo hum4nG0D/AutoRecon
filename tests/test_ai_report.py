@@ -1,9 +1,26 @@
+import io
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from colorama import Fore, Style
+
 from autorecon.ai_report import IncrementalReport, _response, create_report, prepare_input, review_completed_scan, section_chunks, split_input
+from autorecon.config import config
+from autorecon.io import info
+
+
+class FlushTrackingStream(io.StringIO):
+	def __init__(self):
+		super().__init__()
+		self.flushes = 0
+
+	def flush(self):
+		self.flushes += 1
+		super().flush()
 
 
 class AIReportTests(unittest.TestCase):
@@ -88,6 +105,52 @@ class AIReportTests(unittest.TestCase):
 			create_report(self.root, 'model-test', send=True)
 		self.assertIn('Manually reviewed evidence', send.call_args_list[0].args[3])
 		self.assertNotIn('Potential issue', send.call_args_list[0].args[3])
+
+	def test_manual_ai_progress_uses_colored_prefix_and_literal_filename(self):
+		name = 'scan{rst}.txt'
+		(self.root / 'scans' / 'tcp22' / name).write_text('Finding\n', encoding='utf8')
+		create_report(self.root, None, selected=['scans/tcp22/' + name])
+		output = FlushTrackingStream()
+		with patch.dict(config, {'accessible': False}), patch(
+			'autorecon.ai_report.info', side_effect=lambda *args, **kwargs: info(*args, file=output, **kwargs)
+		), patch('autorecon.ai_report.access_token', return_value='mock-token'), patch(
+			'autorecon.ai_report._response', side_effect=['Review', 'Summary']
+		):
+			create_report(self.root, 'model-test', send=True)
+		lines = output.getvalue().splitlines()
+		self.assertEqual(len(lines), 2)
+		self.assertTrue(lines[0].startswith(Fore.BLUE + '[' + Style.BRIGHT + '*' + Style.NORMAL + ']' + Fore.RESET + ' '))
+		self.assertIn(Fore.MAGENTA + Style.BRIGHT + 'AI review' + Style.NORMAL + Fore.RESET + ':', lines[0])
+		self.assertIn('scans/tcp22/scan{rst}.txt', lines[0])
+		self.assertIn('AI review', lines[1])
+		self.assertIn('Consolidating findings', lines[1])
+		self.assertEqual(output.flushes, 2)
+
+	def test_incremental_ai_progress_is_readable_in_accessible_mode(self):
+		name = 'scan{rst}.txt'
+		path = self.root / 'scans' / 'tcp22' / name
+		report = IncrementalReport(self.root, 'model-test', target_address='192.0.2.8{rst}')
+		path.write_text('Finding\n', encoding='utf8')
+		output = FlushTrackingStream()
+		with patch.dict(config, {'accessible': True}), patch(
+			'autorecon.ai_report.info', side_effect=lambda *args, **kwargs: info(*args, file=output, **kwargs)
+		), patch('autorecon.ai_report.access_token', return_value='mock-token'), patch(
+			'autorecon.ai_report._response', side_effect=['Review', 'Summary']
+		):
+			report.review_paths([path])
+			report.finish()
+		self.assertEqual(output.getvalue().splitlines(), [
+			'AI review for 192.0.2.8{rst}: Reviewing completed scan scans/tcp22/scan{rst}.txt (part 1/1)...',
+			'AI review for 192.0.2.8{rst}: Consolidating findings...',
+		])
+		self.assertEqual(output.flushes, 2)
+
+	def test_standalone_ai_cli_strips_color_when_output_is_redirected(self):
+		result = subprocess.run([
+			sys.executable, '-c',
+			"import autorecon.ai_cli; from autorecon.io import info; info('{bmagenta}AI review{rst}: Ready', flush=True)",
+		], cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True, check=True)
+		self.assertEqual(result.stdout, '[*] AI review: Ready\n')
 
 	def test_streaming_request_requires_completion_and_no_storage(self):
 		class FakeResponse:
