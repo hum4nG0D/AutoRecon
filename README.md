@@ -25,7 +25,7 @@ From a clone of this repository, run:
 bash install.sh
 ```
 
-After installing the prerequisites, the script installs this checkout with `pipx`, refreshes the SSH plugin in an existing AutoRecon installation, and downloads the latest `linpeas.sh` from the [official PEASS-ng release](https://github.com/peass-ng/PEASS-ng/releases/latest) into your user cache. Re-run `bash install.sh` after pulling repository updates to refresh AutoRecon and LinPEAS. The cached script is only used when you enable it for an authenticated scan.
+After installing the prerequisites, the script installs this checkout with `pipx`, refreshes this fork's plugins in an existing AutoRecon installation, and downloads the latest `linpeas.sh` from the [official PEASS-ng release](https://github.com/peass-ng/PEASS-ng/releases/latest) into your user cache. Re-run `bash install.sh` after pulling repository updates to refresh AutoRecon and LinPEAS. The cached script is only used when you enable it for an authenticated scan.
 
 ## Example commands
 
@@ -38,6 +38,49 @@ autorecon 192.0.2.10
 autorecon -o ./results 192.0.2.10
 autorecon --list plugins
 ```
+
+### Evidence based web proof checks
+
+The proof plugin automatically discovers GET inputs from up to 20 same-origin HTML pages linked within two hops of each web service root, then tests up to 20 inputs for server-side template expression evaluation. It sends one plain control value and two randomized arithmetic expressions, then marks a result **confirmed** only when both expressions evaluate in the response. This is a narrow check: an inconclusive result does not mean the endpoint is safe. It does not run commands, follow redirects, submit POST forms, or attempt browser-based XSS. Requests are limited to each service's exact scheme, host, and port.
+
+Run a full AutoRecon scan without a manifest; results use AutoRecon's normal `results/` directory:
+
+```bash
+autorecon 192.0.2.10
+```
+
+To run only this verifier against one web origin, use:
+
+```bash
+autorecon-proof --allow-origin http://192.0.2.10:8080 --output proof-evidence.json
+```
+
+You can optionally select exact endpoints with a JSON manifest. Each URL must already contain the selected parameter:
+
+```json
+[
+  {"url": "http://192.0.2.10:8080/search?q=test", "parameter": "q"}
+]
+```
+
+Run the verifier with that manifest and inspect its JSON evidence and matching text summary:
+
+```bash
+autorecon-proof --manifest proof-targets.json \
+  --allow-origin http://192.0.2.10:8080 \
+  --output proof-evidence.json
+```
+
+For an authenticated web session, place request headers in an owner-only local JSON file and pass `--headers-file` (or `--proof-web-probes.headers-file` during a scan). For example, `{"Cookie": "session=..."}` or `{"Authorization": "Bearer ..."}`. The tool does not directly include these headers in evidence; review response excerpts in case the server echoed a secret. Do not put secrets directly in the manifest URL; other query values are used for requests but masked in the saved evidence.
+
+To restrict the plugin during an AutoRecon scan, pass the same manifest. It selects entries that match each discovered HTTP service's exact origin. With or without a manifest, it writes `scans/tcpPORT/tcp_PORT_proof_web.json` plus a text summary under the target results directory. The text summary can participate in AutoRecon's optional `--ai` report:
+
+```bash
+autorecon 192.0.2.10 \
+  --proof-web-probes.manifest proof-targets.json
+```
+
+Evidence contains payloads, response excerpts, and URL paths. Review it before sharing. Discovery is bounded to linked pages and GET inputs; JavaScript-generated routes and unlinked pages are not found automatically. Additional vulnerability verifiers are future stages; existing SSH host checks remain available separately below.
 
 ### Authenticated SSH checks
 
@@ -89,9 +132,9 @@ For the **automatic workflow**, run one command:
 autorecon 192.168.1.30 --linpeas -u websec -i ~/.ssh/cs6035 --ai
 ```
 
-If you have not signed in, AutoRecon opens the ChatGPT authorization page before scanning. It selects the first model available to your account; use `--ai-model MODEL_SLUG` if you want a specific model. As each scan finishes, AutoRecon sends its completed text output for a separate AI review and appends the review to `results/192.168.1.30/ai-report.md`. After the target's scans finish, it reviews any remaining text files and adds a consolidated summary to that same report. The redacted text sent to AI is also saved in `ai-report-input.txt`. This mode transmits automatically without a manual preview.
+If you have not signed in, AutoRecon opens the ChatGPT authorization page before scanning. It selects the first model available to your account; use `--ai-model MODEL_SLUG` if you want a specific model. As each scan finishes, AutoRecon saves its AI review in `results/192.168.1.30/report/ai-report-reviews.md`. After the target's scans finish, it writes the short final summary to `report/ai-report.md`. The redacted text sent to AI is saved in `report/ai-report-input.txt`. This mode transmits automatically without a manual preview. By default, target results use `scans/` for scan output and `report/` for reports; AutoRecon no longer creates empty `exploit/` or `loot/` folders.
 
-The automatic mode uses up to 100 section requests per target by default; set `--ai-max-chunks N` to change the limit. If the limit or a ChatGPT plan limit is reached, completed reviews remain in the report and the final summary is not written.
+The automatic mode uses up to 100 section requests per target by default; set `--ai-max-chunks N` to change the limit. If the limit or a ChatGPT plan limit is reached, completed reviews remain in `report/ai-report-reviews.md` and `report/ai-report.md` stays marked as in progress.
 
 After `bash install.sh`, authorize AutoRecon in your browser and list the models available to your account:
 
@@ -105,17 +148,17 @@ First create a **local-only preview** of exactly what the report command would s
 
 ```bash
 autorecon-ai report results/192.0.2.10
-less results/192.0.2.10/ai-report-input.txt
+less results/192.0.2.10/report/ai-report-input.txt
 ```
 
-You can edit `ai-report-input.txt` to remove anything else you do not want to share. The submit command reads that saved preview, not the original scan files. Use a model slug from `autorecon-ai models`:
+You can edit `report/ai-report-input.txt` to remove anything else you do not want to share. The submit command reads that saved preview, not the original scan files. Use a model slug from `autorecon-ai models`:
 
 ```bash
 autorecon-ai report results/192.0.2.10 --model MODEL_SLUG --send
-less results/192.0.2.10/ai-report.md
+less results/192.0.2.10/report/ai-report.md
 ```
 
-The report has a **Consolidated findings** section followed by a **Scan reviews** section for each selected scan file. Large files are split into labeled parts, with one AI request per part. One additional request consolidates the reviews. `--max-chunks` limits the number of section requests (24 by default). The command fails rather than silently dropping data. Use repeated `--file` options to choose specific files relative to the target results directory, or set a higher limit intentionally. Each review asks for source file and line references so you can verify findings in the original output.
+The final `report/ai-report.md` lists up to five important, actionable findings with source file and line references and a next step for each. Detailed per-scan reviews are saved separately in `report/ai-report-reviews.md`. Large files are split into labeled parts, with one AI request per part. One additional request consolidates the reviews. `--max-chunks` limits the number of section requests (24 by default). The command fails rather than silently dropping data. Use repeated `--file` options to choose specific files relative to the target results directory, or set a higher limit intentionally.
 
 ```bash
 autorecon-ai report results/192.0.2.10 \

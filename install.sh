@@ -13,10 +13,11 @@ fi
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 pipx install --force "$repo_dir"
 
-# Refresh this fork's plugin if AutoRecon has already created its user plugin directory.
+# Refresh this fork's plugins if AutoRecon has already created its user plugin directory.
 plugin_dir="${XDG_DATA_HOME:-$HOME/.local/share}/AutoRecon/plugins"
 if [ -d "$plugin_dir" ]; then
   install -m 644 "$repo_dir/autorecon/default-plugins/ssh-authenticated-host-checks.py" "$plugin_dir/ssh-authenticated-host-checks.py"
+  install -m 644 "$repo_dir/autorecon/default-plugins/proof-web-probes.py" "$plugin_dir/proof-web-probes.py"
 fi
 
 cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/AutoRecon"

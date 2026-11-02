@@ -483,7 +483,7 @@ async def review_scan_outputs(target, paths):
 		try:
 			await asyncio.get_running_loop().run_in_executor(None, target.ai_report.review_paths, paths)
 		except Exception as ex:
-			error('AI review for ' + target.address + ' stopped: ' + str(ex) + '. Completed reviews remain in ai-report.md.')
+			error('AI review for ' + target.address + ' stopped: ' + str(ex) + '. Any completed reviews remain in report/ai-report-reviews.md.')
 
 
 async def review_target_with_ai(target):
@@ -520,12 +520,6 @@ async def scan_target(target):
 	os.makedirs(os.path.join(scandir, 'xml'), exist_ok=True)
 
 	if not config['only_scans_dir']:
-		exploitdir = os.path.join(basedir, 'exploit')
-		os.makedirs(exploitdir, exist_ok=True)
-
-		lootdir = os.path.join(basedir, 'loot')
-		os.makedirs(lootdir, exist_ok=True)
-
 		reportdir = os.path.join(basedir, 'report')
 		os.makedirs(reportdir, exist_ok=True)
 
@@ -929,7 +923,7 @@ async def run():
 	parser.add_argument('-l', '--list', action='store', nargs='?', const='plugins', metavar='TYPE', help='List all plugins or plugins of a specific type. e.g. --list, --list port, --list service')
 	parser.add_argument('-o', '--output', action='store', help='The output directory for results. Default: %(default)s')
 	parser.add_argument('--single-target', action='store_true', help='Only scan a single target. A directory named after the target will not be created. Instead, the directory structure will be created within the output directory. Default: %(default)s')
-	parser.add_argument('--only-scans-dir', action='store_true', help='Only create the "scans" directory for results. Other directories (e.g. exploit, loot, report) will not be created. Default: %(default)s')
+	parser.add_argument('--only-scans-dir', action='store_true', help='Only create the "scans" directory for normal scan results. AI reporting still writes to "report". Default: %(default)s')
 	parser.add_argument('--no-port-dirs', action='store_true', help='Don\'t create directories for ports (e.g. scans/tcp80, scans/udp53). Instead store all results in the "scans" directory itself. Default: %(default)s')
 	parser.add_argument('--heartbeat', action='store', type=int, help='Specifies the heartbeat interval (in seconds) for scan status messages. Default: %(default)s')
 	parser.add_argument('--timeout', action='store', type=int, help='Specifies the maximum amount of time in minutes that AutoRecon should run for. Default: %(default)s')

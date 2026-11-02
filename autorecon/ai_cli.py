@@ -23,7 +23,7 @@ def main(argv=None):
 	report_parser.add_argument('--file', action='append', default=[], help='Include only this relative scan file. Repeat to include more files.')
 	report_parser.add_argument('--model', help='Model slug from autorecon-ai models; required with --send.')
 	report_parser.add_argument('--max-chunks', type=int, default=24, help='Maximum scan section requests sent to ChatGPT (default: 24).')
-	report_parser.add_argument('--send', action='store_true', help='Send the previewed scan text to OpenAI and save ai-report.md.')
+	report_parser.add_argument('--send', action='store_true', help='Send the previewed scan text to OpenAI and save report/ai-report.md.')
 	args = parser.parse_args(argv)
 	try:
 		if args.command == 'login':

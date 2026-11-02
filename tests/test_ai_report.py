@@ -20,6 +20,7 @@ class AIReportTests(unittest.TestCase):
 
 	def test_preview_redacts_secrets_and_skips_raw(self):
 		preview, count, report = create_report(self.root, None)
+		self.assertEqual(preview.parent, self.root / 'report')
 		text = preview.read_text(encoding='utf8')
 		self.assertIn('tcp_22_ssh_linpeas.txt:1 Potential issue', text)
 		self.assertIn('password: [redacted]', text)
@@ -30,6 +31,8 @@ class AIReportTests(unittest.TestCase):
 		self.assertEqual(count, 1)
 		self.assertIsNone(report)
 		self.assertEqual(preview.stat().st_mode & 0o777, 0o600)
+		self.assertFalse((self.root / 'ai-report-input.txt').exists())
+		self.assertTrue((self.root / 'scans' / 'tcp22' / 'tcp_22_ssh_linpeas.txt').is_file())
 
 	def test_rejects_files_outside_results(self):
 		with self.assertRaises(ValueError):
@@ -49,8 +52,32 @@ class AIReportTests(unittest.TestCase):
 			preview, count, report = create_report(self.root, 'model-test', send=True)
 		self.assertEqual(count, 1)
 		self.assertEqual(send.call_count, 2)
-		self.assertIn('Final finding', report.read_text(encoding='utf8'))
+		self.assertEqual(report.parent, self.root / 'report')
+		self.assertIn('## Key findings\n\nFinal finding', report.read_text(encoding='utf8'))
+		self.assertNotIn('Partial finding', report.read_text(encoding='utf8'))
+		self.assertIn('Partial finding', (self.root / 'report' / 'ai-report-reviews.md').read_text(encoding='utf8'))
 		self.assertEqual(report.stat().st_mode & 0o777, 0o600)
+		self.assertEqual((self.root / 'report' / 'ai-report-reviews.md').stat().st_mode & 0o777, 0o600)
+
+	def test_final_report_bounds_verbose_model_output(self):
+		create_report(self.root, None)
+		verbose = '# Long introduction\n\n' + '\n'.join(
+			'- Finding {} '.format(number) + 'detail ' * 50 for number in range(1, 8)
+		) + '\n\nLong conclusion'
+		with patch('autorecon.ai_report.access_token', return_value='mock-token'), patch(
+			'autorecon.ai_report._response', side_effect=['Review', verbose]
+		):
+			_, _, report = create_report(self.root, 'model-test', send=True)
+		findings = report.read_text(encoding='utf8').split('## Key findings\n\n', 1)[1].splitlines()
+		self.assertEqual(len(findings), 5)
+		self.assertTrue(all(len(line.split()) <= 36 for line in findings))
+		self.assertNotIn('Long introduction', report.read_text(encoding='utf8'))
+		self.assertNotIn('Finding 6', report.read_text(encoding='utf8'))
+		with patch('autorecon.ai_report.access_token', return_value='mock-token'), patch(
+			'autorecon.ai_report._response', side_effect=['Review', 'word ' * 300]
+		):
+			_, _, report = create_report(self.root, 'model-test', send=True)
+		self.assertLessEqual(len(report.read_text(encoding='utf8').split()), 160)
 
 	def test_send_uses_edited_preview(self):
 		preview, _, _ = create_report(self.root, None)
@@ -83,19 +110,20 @@ class AIReportTests(unittest.TestCase):
 		self.assertIs(payload['stream'], True)
 		self.assertEqual(payload['input'][0]['content'], 'scan data')
 
-	def test_completed_scan_reviews_files_separately(self):
+	def test_completed_report_keeps_scan_reviews_separate(self):
 		(self.root / 'scans' / 'tcp22' / 'tcp_22_ssh_host.txt').write_text('Hostname example\n', encoding='utf8')
 		with patch('autorecon.ai_report.access_token', return_value='mock-token'), patch(
 			'autorecon.ai_report._response', side_effect=['Host review', 'LinPEAS review', 'Combined summary']
 		) as send:
 			report = review_completed_scan(self.root, 'model-test')
 		text = report.read_text(encoding='utf8')
+		reviews = (self.root / 'report' / 'ai-report-reviews.md').read_text(encoding='utf8')
 		self.assertEqual(send.call_count, 3)
-		self.assertIn('## Consolidated findings\n\nCombined summary', text)
-		self.assertIn('### `scans/tcp22/tcp_22_ssh_host.txt`', text)
-		self.assertIn('### `scans/tcp22/tcp_22_ssh_linpeas.txt`', text)
-		self.assertIn('Host review', text)
-		self.assertIn('LinPEAS review', text)
+		self.assertEqual(text, '# AutoRecon AI report\n\n## Key findings\n\nCombined summary\n')
+		self.assertIn('### `scans/tcp22/tcp_22_ssh_host.txt`', reviews)
+		self.assertIn('### `scans/tcp22/tcp_22_ssh_linpeas.txt`', reviews)
+		self.assertIn('Host review', reviews)
+		self.assertIn('LinPEAS review', reviews)
 
 	def test_partial_reviews_survive_later_failure(self):
 		(self.root / 'scans' / 'tcp22' / 'tcp_22_ssh_host.txt').write_text('Hostname example\n', encoding='utf8')
@@ -104,9 +132,24 @@ class AIReportTests(unittest.TestCase):
 		):
 			with self.assertRaises(RuntimeError):
 				review_completed_scan(self.root, 'model-test')
-		text = (self.root / 'ai-report.md').read_text(encoding='utf8')
-		self.assertIn('First review', text)
-		self.assertIn('Consolidated summary pending', text)
+		text = (self.root / 'report' / 'ai-report.md').read_text(encoding='utf8')
+		self.assertIn('Review in progress', text)
+		self.assertNotIn('First review', text)
+		self.assertIn('First review', (self.root / 'report' / 'ai-report-reviews.md').read_text(encoding='utf8'))
+
+	def test_new_run_clears_old_review_notes(self):
+		create_report(self.root, None)
+		with patch('autorecon.ai_report.access_token', return_value='mock-token'), patch(
+			'autorecon.ai_report._response', side_effect=['Old review', 'Old summary']
+		):
+			create_report(self.root, 'model-test', send=True)
+		with patch('autorecon.ai_report.access_token', return_value='mock-token'), patch(
+			'autorecon.ai_report._response', side_effect=RuntimeError('limit')
+		):
+			with self.assertRaises(RuntimeError):
+				create_report(self.root, 'model-test', send=True)
+		self.assertNotIn('Old review', (self.root / 'report' / 'ai-report-reviews.md').read_text(encoding='utf8'))
+		self.assertIn('Review in progress', (self.root / 'report' / 'ai-report.md').read_text(encoding='utf8'))
 
 	def test_incremental_review_writes_each_scan_before_final_summary(self):
 		host = self.root / 'scans' / 'tcp22' / 'host.txt'
@@ -119,16 +162,18 @@ class AIReportTests(unittest.TestCase):
 		) as send:
 			report.review_paths([host])
 			first = report.report_path.read_text(encoding='utf8')
-			self.assertIn('Host review', first)
-			self.assertIn('Consolidated summary pending', first)
+			self.assertIn('Review in progress', first)
+			self.assertNotIn('Host review', first)
+			self.assertIn('Host review', (self.root / 'report' / 'ai-report-reviews.md').read_text(encoding='utf8'))
 			report.review_paths([host, linpeas])
 			self.assertEqual(send.call_count, 2)
 			report.review_remaining()
 			self.assertEqual(send.call_count, 2)
 			report.finish()
 		self.assertEqual(send.call_count, 3)
-		self.assertIn('Final summary', report.report_path.read_text(encoding='utf8'))
-		self.assertIn('Host finding', (self.root / 'ai-report-input.txt').read_text(encoding='utf8'))
+		self.assertEqual(report.report_path.read_text(encoding='utf8'), '# AutoRecon AI report\n\n## Key findings\n\nFinal summary\n')
+		self.assertIn('LinPEAS review', (self.root / 'report' / 'ai-report-reviews.md').read_text(encoding='utf8'))
+		self.assertIn('Host finding', (self.root / 'report' / 'ai-report-input.txt').read_text(encoding='utf8'))
 
 	def test_incremental_review_skips_unchanged_prior_scan_output(self):
 		report = IncrementalReport(self.root, 'model-test')
