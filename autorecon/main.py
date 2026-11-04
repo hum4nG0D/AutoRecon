@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 
-import argparse, asyncio, importlib.util, inspect, ipaddress, math, os, re, select, shutil, signal, socket, sys, termios, time, traceback, tty
+import argparse, asyncio, importlib.util, inspect, ipaddress, math, os, re, select, shutil, signal, socket, sys, termios, time, traceback, tty, uuid
 from datetime import datetime
 
 try:
@@ -13,8 +13,10 @@ except ModuleNotFoundError:
 colorama.init()
 
 from autorecon.config import config, configurable_keys, configurable_boolean_keys
+from autorecon.events import EventWriter, target_terminal_event, terminal_event_for_targets, watch_task
 from autorecon.io import slugify, e, fformat, cprint, debug, info, warn, error, fail, CommandStreamReader
 from autorecon.plugins import Pattern, PortScan, ServiceScan, Report, AutoRecon
+from autorecon.selection import failed_plugin_checks, parse_include_plugins, plugin_selected, service_plugin_candidates
 from autorecon.targets import Target, Service
 
 VERSION = "2.0.36"
@@ -53,6 +55,54 @@ else:
 terminal_settings = None
 
 autorecon = AutoRecon()
+
+
+def emit_event(target, event, **fields):
+	"""Publish a target event without tying scan execution to the viewer."""
+	writer = getattr(target, 'event_writer', None)
+	if writer is not None:
+		writer.emit(event, target=target.address, **fields)
+
+
+def emit_run_terminal(event, **fields):
+	if autorecon.event_writer is not None:
+		autorecon.event_writer.emit(event, **fields)
+	else:
+		for target in autorecon.event_targets:
+			emit_event(target, target_terminal_event(target, event), **fields)
+
+
+def scan_task_id(target, category, plugin, service=None):
+	parts = [target.address, category]
+	if service is not None:
+		parts.append(service)
+	parts.append(plugin.slug)
+	return '/'.join(parts)
+
+
+def queue_scanner_task(coroutine, targets, category, plugin, service=None):
+	"""Emit queued/cancelled transitions even when a task never gets a slot."""
+	targets = list(targets)
+	for target in targets:
+		emit_event(target, 'task_queued', task_id=scan_task_id(target, category, plugin, service),
+			category=category, plugin=plugin.slug, **({'service': service} if service else {}))
+	task = asyncio.create_task(coroutine)
+
+	def cancelled():
+		for target in targets:
+			emit_event(target, 'task_cancelled', task_id=scan_task_id(target, category, plugin, service),
+				category=category, plugin=plugin.slug, **({'service': service} if service else {}))
+
+	def failed(_exception):
+		for target in targets:
+			target.scan_status = 'failed'
+
+	return watch_task(task, cancelled, failed)
+
+
+def selected_plugin(plugin, category):
+	return plugin_selected(plugin, autorecon.include_plugins, config[category],
+		autorecon.tags, autorecon.excluded_tags)
 
 def calculate_elapsed_time(start_time, short=False):
 	elapsed_seconds = round(time.time() - start_time)
@@ -96,7 +146,10 @@ def calculate_elapsed_time(start_time, short=False):
 # works with signal.signal() and handles Ctrl-C.
 # They are not used for any other purpose.
 def cancel_all_tasks(sig, frame):
-	for task in asyncio.all_tasks():
+	if sig is not None:
+		autorecon.cancelled = True
+	tasks = [task for task in asyncio.all_tasks() if sig is not None or task is not asyncio.current_task()]
+	for task in tasks:
 		task.cancel()
 
 	processes = []
@@ -125,6 +178,7 @@ def cancel_all_tasks(sig, frame):
 		# Restore original terminal settings.
 		if terminal_settings is not None:
 			termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, terminal_settings)
+	return tasks
 
 async def start_heartbeat(target, period=60):
 	while True:
@@ -267,6 +321,7 @@ async def get_semaphore(autorecon):
 	return semaphore
 
 async def port_scan(plugin, target):
+	task_id = scan_task_id(target, 'port', plugin)
 	if config['ports']:
 		if config['ports']['tcp'] or config['ports']['udp']:
 			target.ports = {'tcp':None, 'udp':None}
@@ -276,13 +331,16 @@ async def port_scan(plugin, target):
 				target.ports['udp'] = ','.join(config['ports']['udp'])
 			if plugin.specific_ports is False:
 				warn('Port scan {bblue}' + plugin.name + ' {green}(' + plugin.slug + '){rst} cannot be used to scan specific ports, and --ports was used. Skipping.', verbosity=2)
+				emit_event(target, 'task_skipped', task_id=task_id, category='port', plugin=plugin.slug, detail='Plugin does not support specific ports.')
 				return {'type':'port', 'plugin':plugin, 'result':[]}
 			else:
 				if plugin.type == 'tcp' and not config['ports']['tcp']:
 					warn('Port scan {bblue}' + plugin.name + ' {green}(' + plugin.slug + '){rst} is a TCP port scan but no TCP ports were set using --ports. Skipping', verbosity=2)
+					emit_event(target, 'task_skipped', task_id=task_id, category='port', plugin=plugin.slug, detail='No TCP ports selected.')
 					return {'type':'port', 'plugin':plugin, 'result':[]}
 				elif plugin.type == 'udp' and not config['ports']['udp']:
 					warn('Port scan {bblue}' + plugin.name + ' {green}(' + plugin.slug + '){rst} is a UDP port scan but no UDP ports were set using --ports. Skipping', verbosity=2)
+					emit_event(target, 'task_skipped', task_id=task_id, category='port', plugin=plugin.slug, detail='No UDP ports selected.')
 					return {'type':'port', 'plugin':plugin, 'result':[]}
 
 	async with target.autorecon.port_scan_semaphore:
@@ -292,10 +350,13 @@ async def port_scan(plugin, target):
 
 		async with target.lock:
 			target.running_tasks[plugin.slug] = {'plugin': plugin, 'processes': [], 'outputs': [], 'start': start_time}
+		emit_event(target, 'task_started', task_id=task_id, category='port', plugin=plugin.slug)
 
 		try:
 			result = await plugin.run(target)
 		except Exception as ex:
+			emit_event(target, 'task_failed', task_id=task_id, category='port', plugin=plugin.slug,
+				error_type=type(ex).__name__)
 			exc_type, exc_value, exc_tb = sys.exc_info()
 			error_text = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb)[-2:])
 			raise Exception(cprint('Error: Port scan {bblue}' + plugin.name + ' {green}(' + plugin.slug + '){rst} running against {byellow}' + target.address + '{rst} produced an exception:\n\n' + error_text, color=Fore.RED, char='!', printmsg=False))
@@ -306,6 +367,8 @@ async def port_scan(plugin, target):
 				await process_dict['process'].wait()
 
 			if process_dict['process'].returncode != 0:
+				emit_event(target, 'task_warning', task_id=task_id, category='port', plugin=plugin.slug,
+					exit_code=process_dict['process'].returncode, detail='A scan command returned a non-zero exit code.')
 				errors = []
 				while True:
 					line = await process_dict['stderr'].readline()
@@ -329,11 +392,13 @@ async def port_scan(plugin, target):
 			outputs = target.running_tasks[plugin.slug]['outputs'][:]
 			target.running_tasks.pop(plugin.slug, None)
 		queue_ai_review(target, outputs)
+		emit_event(target, 'task_completed', task_id=task_id, category='port', plugin=plugin.slug, outputs=outputs)
 
 		info('Port scan {bblue}' + plugin.name + ' {green}(' + plugin.slug + '){rst} against {byellow}' + target.address + '{rst} finished in ' + elapsed_time, verbosity=2)
 		return {'type':'port', 'plugin':plugin, 'result':result}
 
 async def service_scan(plugin, service):
+	task_id = scan_task_id(service.target, 'service', plugin, service.tag())
 	semaphore = service.target.autorecon.service_scan_semaphore
 
 	if not config['force_services']:
@@ -418,10 +483,13 @@ async def service_scan(plugin, service):
 
 			async with service.target.lock:
 				service.target.running_tasks[tag] = {'plugin': plugin, 'processes': [], 'outputs': [], 'start': start_time}
+			emit_event(service.target, 'task_started', task_id=task_id, category='service', plugin=plugin.slug, service=service.tag())
 
 			try:
 				result = await plugin.run(service)
 			except Exception as ex:
+				emit_event(service.target, 'task_failed', task_id=task_id, category='service', plugin=plugin.slug,
+					service=service.tag(), error_type=type(ex).__name__)
 				exc_type, exc_value, exc_tb = sys.exc_info()
 				error_text = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb)[-2:])
 				raise Exception(cprint('Error: Service scan {bblue}' + plugin.name + ' {green}(' + tag + '){rst} running against {byellow}' + service.target.address + '{rst} produced an exception:\n\n' + error_text, color=Fore.RED, char='!', printmsg=False))
@@ -432,6 +500,9 @@ async def service_scan(plugin, service):
 					await process_dict['process'].wait()
 
 				if process_dict['process'].returncode != 0 and not (process_dict['cmd'].startswith('curl') and process_dict['process'].returncode == 22):
+					emit_event(service.target, 'task_warning', task_id=task_id, category='service', plugin=plugin.slug,
+						service=service.tag(), exit_code=process_dict['process'].returncode,
+						detail='A scan command returned a non-zero exit code.')
 					errors = []
 					while True:
 						line = await process_dict['stderr'].readline()
@@ -455,6 +526,7 @@ async def service_scan(plugin, service):
 				outputs = service.target.running_tasks[tag]['outputs'][:]
 				service.target.running_tasks.pop(tag, None)
 			queue_ai_review(service.target, outputs)
+			emit_event(service.target, 'task_completed', task_id=task_id, category='service', plugin=plugin.slug, service=service.tag(), outputs=outputs)
 
 			info('Service scan {bblue}' + plugin.name + ' {green}(' + tag + '){rst} against {byellow}' + service.target.address + '{rst} finished in ' + elapsed_time, verbosity=2)
 			return {'type':'service', 'plugin':plugin, 'result':result}
@@ -466,15 +538,25 @@ async def generate_report(plugin, targets):
 		semaphore = await get_semaphore(autorecon)
 
 	async with semaphore:
+		for target in targets:
+			emit_event(target, 'task_started', task_id=scan_task_id(target, 'report', plugin), category='report', plugin=plugin.slug)
 		try:
 			result = await plugin.run(targets)
 		except Exception as ex:
+			for target in targets:
+				emit_event(target, 'task_failed', task_id=scan_task_id(target, 'report', plugin),
+					category='report', plugin=plugin.slug, error_type=type(ex).__name__)
 			exc_type, exc_value, exc_tb = sys.exc_info()
 			error_text = ''.join(traceback.format_exception(exc_type, exc_value, exc_tb)[-2:])
 			raise Exception(cprint('Error: Report plugin {bblue}' + plugin.name + ' {green}(' + plugin.slug + '){rst} produced an exception:\n\n' + error_text, color=Fore.RED, char='!', printmsg=False))
+		for target in targets:
+			emit_event(target, 'task_completed', task_id=scan_task_id(target, 'report', plugin), category='report', plugin=plugin.slug)
+		return result
 
 def queue_ai_review(target, paths):
 	if target.autorecon.args.ai_review and paths:
+		for path in paths:
+			emit_event(target, 'ai_scan_queued', category='ai', source=os.path.relpath(path, target.basedir))
 		target.ai_tasks.append(asyncio.create_task(review_scan_outputs(target, paths)))
 
 
@@ -483,21 +565,33 @@ async def review_scan_outputs(target, paths):
 		try:
 			await asyncio.get_running_loop().run_in_executor(None, target.ai_report.review_paths, paths)
 		except Exception as ex:
+			emit_event(target, 'ai_review_failed', category='ai', error_type=type(ex).__name__)
 			error('AI review for ' + target.address + ' stopped: ' + str(ex) + '. Any completed reviews remain in report/ai-report-reviews.md.')
 
 
 async def review_target_with_ai(target):
 	"""Review remaining files and summarize after scans finish."""
+	emit_event(target, 'ai_review_started', category='ai')
 	try:
 		if target.ai_tasks:
 			await asyncio.gather(*target.ai_tasks)
 		async with target.ai_lock:
 			await asyncio.get_running_loop().run_in_executor(None, target.ai_report.review_remaining)
 			report_path = await asyncio.get_running_loop().run_in_executor(None, target.ai_report.finish)
+		if target.ai_report.failed:
+			target.scan_status = 'failed'
+			emit_event(target, 'ai_review_failed', category='ai', detail='One or more scan reviews failed; final summary was not produced.')
+			emit_event(target, 'target_failed', detail='AI review failed.')
+			return
 		if report_path:
+			emit_event(target, 'ai_review_completed', category='ai')
+			emit_event(target, 'report_ready', category='ai', path=os.path.relpath(report_path, target.basedir))
 			info('{bmagenta}AI review{rst}: Saved report for {byellow}{address}{rst}: {report_path}',
 				address=target.address, report_path=str(report_path))
 	except Exception as ex:
+		target.scan_status = 'failed'
+		emit_event(target, 'ai_review_failed', category='ai', error_type=type(ex).__name__)
+		emit_event(target, 'target_failed', detail='AI review failed.')
 		error('AI review for ' + target.address + ' stopped: ' + str(ex) + '. Scan results remain available.')
 
 async def scan_target(target):
@@ -514,10 +608,18 @@ async def scan_target(target):
 	scandir = os.path.join(basedir, 'scans')
 	target.scandir = scandir
 	os.makedirs(scandir, exist_ok=True)
+	target.event_writer = target.autorecon.event_writer or EventWriter(
+		os.path.join(scandir, '_events.jsonl'), target.autorecon.run_id or uuid.uuid4().hex)
+	target.autorecon.event_targets.append(target)
+	target.scan_status = 'running'
+	if target.autorecon.event_writer is None:
+		emit_event(target, 'run_started', output_dir=basedir, pid=os.getpid(), hostname=socket.gethostname())
+	emit_event(target, 'target_started', output_dir=basedir, pid=os.getpid())
 	if target.autorecon.args.ai_review:
 		from autorecon.ai_report import IncrementalReport
 		target.ai_report = IncrementalReport(basedir, target.autorecon.args.ai_model,
-			target.autorecon.args.ai_max_chunks, target_address=target.address)
+			target.autorecon.args.ai_max_chunks, target_address=target.address,
+			on_event=lambda event, **fields: emit_event(target, event, **fields))
 
 	os.makedirs(os.path.join(scandir, 'xml'), exist_ok=True)
 
@@ -562,34 +664,17 @@ async def scan_target(target):
 		else:
 			error('No services were defined. Please check your service syntax: [tcp|udp]/<port>/<service-name>/[secure|insecure]')
 			heartbeat.cancel()
+			target.scan_status = 'failed'
+			emit_event(target, 'target_failed', detail='No valid services were defined.')
 			autorecon.errors = True
 			return
 	else:
 		for plugin in target.autorecon.plugin_types['port']:
 			if config['proxychains'] and plugin.type == 'udp':
 				continue
-
-			if config['port_scans'] and plugin.slug in config['port_scans']:
-				matching_tags = True
-				excluded_tags = False
-			else:
-				plugin_tag_set = set(plugin.tags)
-
-				matching_tags = False
-				for tag_group in target.autorecon.tags:
-					if set(tag_group).issubset(plugin_tag_set):
-						matching_tags = True
-						break
-
-				excluded_tags = False
-				for tag_group in target.autorecon.excluded_tags:
-					if set(tag_group).issubset(plugin_tag_set):
-						excluded_tags = True
-						break
-
-			if matching_tags and not excluded_tags:
+			if selected_plugin(plugin, 'port_scans'):
 				target.scans['ports'][plugin.slug] = {'plugin':plugin, 'commands':[]}
-				pending.append(asyncio.create_task(port_scan(plugin, target)))
+				pending.append(queue_scanner_task(port_scan(plugin, target), [target], 'port', plugin))
 
 	async with autorecon.lock:
 		autorecon.scanning_targets.append(target)
@@ -634,6 +719,8 @@ async def scan_target(target):
 				target.services.append(service.full_tag())
 			else:
 				continue
+			emit_event(target, 'service_discovered', service=service.full_tag(), protocol=service.protocol,
+				port=service.port, name=service.name)
 
 			info('Identified service {bmagenta}' + service.name + '{rst} on {bmagenta}' + service.protocol + '/' + str(service.port) + '{rst} on {byellow}' + target.address + '{rst}', verbosity=1)
 
@@ -680,7 +767,7 @@ async def scan_target(target):
 			matching_plugins = []
 			heading = False
 
-			for plugin in target.autorecon.plugin_types['service']:
+			for plugin in service_plugin_candidates(target.autorecon.plugin_types['service'], target.autorecon.include_plugins):
 				plugin_was_run = False
 				plugin_service_match = False
 				plugin_tag = service.tag() + '/' + plugin.slug
@@ -702,23 +789,7 @@ async def scan_target(target):
 						plugin_service_match = True
 
 					if plugin_service_match:
-						if config['service_scans'] and plugin.slug in config['service_scans']:
-							matching_tags = True
-							excluded_tags = False
-						else:
-							plugin_tag_set = set(plugin.tags)
-
-							matching_tags = False
-							for tag_group in target.autorecon.tags:
-								if set(tag_group).issubset(plugin_tag_set):
-									matching_tags = True
-									break
-
-							excluded_tags = False
-							for tag_group in target.autorecon.excluded_tags:
-								if set(tag_group).issubset(plugin_tag_set):
-									excluded_tags = True
-									break
+						selection_matches = selected_plugin(plugin, 'service_scans')
 
 						# TODO: Maybe make this less messy, keep manual-only plugins separate?
 						plugin_is_runnable = False
@@ -727,7 +798,7 @@ async def scan_target(target):
 								plugin_is_runnable = True
 								break
 
-						if plugin_is_runnable and matching_tags and not excluded_tags:
+						if plugin_is_runnable and selection_matches:
 							# Skip plugin if run_once_boolean and plugin already in target scans
 							if plugin.run_once_boolean:
 								plugin_queued = False
@@ -823,48 +894,43 @@ async def scan_target(target):
 				else:
 					if service not in target.scans['services']:
 						target.scans['services'][service] = {}
-					target.scans['services'][service][plugin_tag] = {'plugin':plugin, 'commands':[]}
+				target.scans['services'][service][plugin_tag] = {'plugin':plugin, 'commands':[]}
 
-				pending.add(asyncio.create_task(service_scan(plugin, service)))
+				pending.add(queue_scanner_task(service_scan(plugin, service), [target], 'service', plugin, service.tag()))
 
 			if not service_match:
 				warn('{byellow}[' + target.address + ']{srst} Service ' + service.full_tag() + ' did not match any plugins based on the service name.{rst}', verbosity=2)
 				if service.name not in config['service_exceptions'] and service.full_tag() not in target.autorecon.missing_services:
 					target.autorecon.missing_services.append(service.full_tag())
 
-	for plugin in target.autorecon.plugin_types['report']:
-		if config['reports'] and plugin.slug in config['reports']:
-			matching_tags = True
-			excluded_tags = False
-		else:
-			plugin_tag_set = set(plugin.tags)
+	if timed_out and pending:
+		for task in pending:
+			task.cancel()
+		await asyncio.gather(*pending, return_exceptions=True)
+		pending = set()
 
-			matching_tags = False
-			for tag_group in target.autorecon.tags:
-				if set(tag_group).issubset(plugin_tag_set):
-					matching_tags = True
-					break
-
-			excluded_tags = False
-			for tag_group in target.autorecon.excluded_tags:
-				if set(tag_group).issubset(plugin_tag_set):
-					excluded_tags = True
-					break
-
-		if matching_tags and not excluded_tags:
-			pending.add(asyncio.create_task(generate_report(plugin, [target])))
+	for plugin in target.autorecon.plugin_types['report'] if not timed_out else ():
+		if selected_plugin(plugin, 'reports'):
+			pending.add(queue_scanner_task(generate_report(plugin, [target]), [target], 'report', plugin))
 
 	while pending:
 		done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED, timeout=1)
+		if config['target_timeout'] is not None:
+			elapsed_seconds = round(time.time() - start_time)
+			if elapsed_seconds >= config['target_timeout'] * 60:
+				timed_out = True
+				break
+
+	if timed_out and pending:
+		for task in pending:
+			task.cancel()
+		await asyncio.gather(*pending, return_exceptions=True)
+		pending = set()
 
 	heartbeat.cancel()
 	elapsed_time = calculate_elapsed_time(start_time)
 
 	if timed_out:
-
-		for task in pending:
-			task.cancel()
-
 		for process_list in target.running_tasks.values():
 			for process_dict in process_list['processes']:
 				try:
@@ -873,8 +939,15 @@ async def scan_target(target):
 					pass
 
 		warn('{byellow}Scanning target ' + target.address + ' took longer than the specified target period (' + str(config['target_timeout']) + ' min). Cancelling scans and moving to next target.{rst}')
+		target.scan_status = 'timed_out'
+		emit_event(target, 'target_timed_out')
 	else:
 		info('Finished scanning target {byellow}' + target.address + '{rst} in ' + elapsed_time)
+		if target.scan_status == 'failed':
+			emit_event(target, 'target_failed', detail='One or more scan tasks failed.')
+		else:
+			target.scan_status = 'completed'
+			emit_event(target, 'target_completed', elapsed_seconds=round(time.time() - start_time))
 		if target.autorecon.args.ai_review:
 			target.autorecon.ai_tasks.append(asyncio.create_task(review_target_with_ai(target)))
 
@@ -914,6 +987,7 @@ async def run():
 	parser.add_argument('--port-scans', action='store', type=str, metavar='PLUGINS', help='Override --tags / --exclude-tags for the listed PortScan plugins (comma separated). Default: %(default)s')
 	parser.add_argument('--service-scans', action='store', type=str, metavar='PLUGINS', help='Override --tags / --exclude-tags for the listed ServiceScan plugins (comma separated). Default: %(default)s')
 	parser.add_argument('--reports', action='store', type=str, metavar='PLUGINS', help='Override --tags / --exclude-tags for the listed Report plugins (comma separated). Default: %(default)s')
+	parser.add_argument('--include-plugins', type=str, metavar='SLUGS', help='Run exactly these comma-separated plugin slugs across port, service, and report plugins. Overrides tag selection.')
 	parser.add_argument('--linpeas', action='store_true', help='Run LinPEAS during a full scan. Use with -u USER -i KEY, or the equivalent SSH plugin options.')
 	parser.add_argument('-u', '--ssh-user', help='SSH username for --linpeas.')
 	parser.add_argument('-i', '--ssh-identity', help='SSH private key for --linpeas.')
@@ -924,6 +998,7 @@ async def run():
 	parser.add_argument('--add-plugins-dir', action='store', type=str, metavar='PLUGINS_DIR', help='The location of an additional plugins directory to add to the main one. Default: %(default)s')
 	parser.add_argument('-l', '--list', action='store', nargs='?', const='plugins', metavar='TYPE', help='List all plugins or plugins of a specific type. e.g. --list, --list port, --list service')
 	parser.add_argument('-o', '--output', action='store', help='The output directory for results. Default: %(default)s')
+	parser.add_argument('--events-file', type=str, metavar='PATH', help='Write all progress events to one JSONL file. By default each target writes scans/_events.jsonl.')
 	parser.add_argument('--single-target', action='store_true', help='Only scan a single target. A directory named after the target will not be created. Instead, the directory structure will be created within the output directory. Default: %(default)s')
 	parser.add_argument('--only-scans-dir', action='store_true', help='Only create the "scans" directory for normal scan results. AI reporting still writes to "report". Default: %(default)s')
 	parser.add_argument('--no-port-dirs', action='store_true', help='Don\'t create directories for ports (e.g. scans/tcp80, scans/udp53). Instead store all results in the "scans" directory itself. Default: %(default)s')
@@ -1262,7 +1337,12 @@ async def run():
 			else:
 				error('Invalid value provided to --max-plugin-global-instances. Values must be in the format PLUGIN:NUMBER.')
 
-	failed_check_plugin_slugs = []
+	try:
+		autorecon.include_plugins = parse_include_plugins(args.include_plugins, autorecon.plugins)
+	except ValueError as exc:
+		error(str(exc))
+		sys.exit(1)
+
 	for slug, plugin in autorecon.plugins.items():
 		if hasattr(plugin, 'max_target_instances') and plugin.slug in max_plugin_target_instances:
 			plugin.max_target_instances = max_plugin_target_instances[plugin.slug]
@@ -1270,18 +1350,15 @@ async def run():
 		if hasattr(plugin, 'max_global_instances') and plugin.slug in max_plugin_global_instances:
 			plugin.max_global_instances = max_plugin_global_instances[plugin.slug]
 
-		for member_name, _ in inspect.getmembers(plugin, predicate=inspect.ismethod):
-			if member_name == 'check':
-				if plugin.check() == False:
-					failed_check_plugin_slugs.append(slug)
-					continue
-				continue
+	failed_check_plugin_slugs = failed_plugin_checks(autorecon.plugins, autorecon.include_plugins)
 	
 	# Check for any failed plugin checks.
 	for slug in failed_check_plugin_slugs:
 		# If plugin checks should be ignored, remove the affected plugins at runtime.
 		if config['ignore_plugin_checks']:
 			autorecon.plugins.pop(slug)
+			for plugins in autorecon.plugin_types.values():
+				plugins[:] = [plugin for plugin in plugins if plugin.slug != slug]
 		else:
 			print()
 			error('The following plugins failed checks that prevent AutoRecon from running: ' + ', '.join(failed_check_plugin_slugs))
@@ -1557,27 +1634,13 @@ async def run():
 	if not config['force_services']:
 		port_scan_plugin_count = 0
 		for plugin in autorecon.plugin_types['port']:
-			if config['port_scans'] and plugin.slug in config['port_scans']:
-				matching_tags = True
-				excluded_tags = False
-			else:
-				matching_tags = False
-				for tag_group in autorecon.tags:
-					if set(tag_group).issubset(set(plugin.tags)):
-						matching_tags = True
-						break
-
-				excluded_tags = False
-				for tag_group in autorecon.excluded_tags:
-					if set(tag_group).issubset(set(plugin.tags)):
-						excluded_tags = True
-						break
-
-			if matching_tags and not excluded_tags:
+			if config['proxychains'] and plugin.type == 'udp':
+				continue
+			if selected_plugin(plugin, 'port_scans'):
 				port_scan_plugin_count += 1
 
 		if port_scan_plugin_count == 0:
-			error('There are no port scan plugins that match the tags specified.')
+			error('There are no port scan plugins selected for this run.')
 			errors = True
 	else:
 		port_scan_plugin_count = config['max_port_scans'] / 5
@@ -1586,6 +1649,11 @@ async def run():
 		sys.exit(1)
 
 	config['port_scan_plugin_count'] = port_scan_plugin_count
+	autorecon.run_id = uuid.uuid4().hex
+	if args.events_file:
+		autorecon.event_writer = EventWriter(os.path.abspath(os.path.expanduser(args.events_file)), autorecon.run_id)
+		autorecon.event_writer.emit('run_started', target_count=len(autorecon.pending_targets),
+			output_dir=os.path.abspath(config['output']), pid=os.getpid(), hostname=socket.gethostname())
 
 	num_initial_targets = max(1, math.ceil(config['max_port_scans'] / port_scan_plugin_count))
 
@@ -1612,7 +1680,9 @@ async def run():
 
 		# If something failed in scan_target, autorecon.errors will be true.
 		if autorecon.errors:
-			cancel_all_tasks(None, None)
+			cancelled_tasks = cancel_all_tasks(None, None)
+			await asyncio.gather(*cancelled_tasks, return_exceptions=True)
+			emit_run_terminal('run_failed')
 			sys.exit(1)
 
 		# Check if global timeout has occurred.
@@ -1652,39 +1722,24 @@ async def run():
 	if not config['disable_keyboard_control']:
 		keyboard_monitor.cancel()
 
-	# If there's only one target we don't need a combined report
-	if len(autorecon.completed_targets) > 1:
-		for plugin in autorecon.plugin_types['report']:
-			if config['reports'] and plugin.slug in config['reports']:
-				matching_tags = True
-				excluded_tags = False
-			else:
-				plugin_tag_set = set(plugin.tags)
-
-				matching_tags = False
-				for tag_group in autorecon.tags:
-					if set(tag_group).issubset(plugin_tag_set):
-						matching_tags = True
-						break
-
-				excluded_tags = False
-				for tag_group in autorecon.excluded_tags:
-					if set(tag_group).issubset(plugin_tag_set):
-						excluded_tags = True
-						break
-
-			if matching_tags and not excluded_tags:
-				pending.add(asyncio.create_task(generate_report(plugin, autorecon.completed_targets)))
-
-		while pending:
-			done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED, timeout=1)
-
 	if timed_out:
-		cancel_all_tasks(None, None)
+		cancelled_tasks = cancel_all_tasks(None, None)
+		await asyncio.gather(*cancelled_tasks, return_exceptions=True)
 
 		elapsed_time = calculate_elapsed_time(start_time)
+		emit_run_terminal('run_timed_out', elapsed_seconds=round(time.time() - start_time))
 		warn('{byellow}AutoRecon took longer than the specified timeout period (' + str(config['timeout']) + ' min). Cancelling all scans and exiting.{rst}')
 	else:
+		# If there's only one target we don't need a combined report.
+		if len(autorecon.completed_targets) > 1:
+			for plugin in autorecon.plugin_types['report']:
+				if selected_plugin(plugin, 'reports'):
+					pending.add(queue_scanner_task(generate_report(plugin, autorecon.completed_targets),
+						autorecon.completed_targets, 'report', plugin))
+
+			while pending:
+				done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED, timeout=1)
+
 		# AI reviews are separate from target scanning so they do not occupy scan slots.
 		if autorecon.ai_tasks:
 			await asyncio.gather(*autorecon.ai_tasks)
@@ -1692,6 +1747,13 @@ async def run():
 			await asyncio.sleep(1)
 
 		elapsed_time = calculate_elapsed_time(start_time)
+		if autorecon.event_writer is not None:
+			autorecon.event_writer.emit(terminal_event_for_targets(autorecon.event_targets),
+				elapsed_seconds=round(time.time() - start_time), target_count=len(autorecon.event_targets))
+		else:
+			for target in autorecon.event_targets:
+				emit_event(target, terminal_event_for_targets([target]),
+					elapsed_seconds=round(time.time() - start_time))
 		info('{bright}Finished scanning all targets in ' + elapsed_time + '!{rst}')
 		info('{bright}Don\'t forget to check out more commands to run manually in the _manual_commands.txt file in each target\'s scans directory!')
 
@@ -1712,6 +1774,9 @@ def main():
 		pass
 	except RuntimeError:
 		pass
+	finally:
+		if autorecon.cancelled:
+			emit_run_terminal('run_cancelled')
 
 if __name__ == '__main__':
 	main()

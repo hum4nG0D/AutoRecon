@@ -70,6 +70,27 @@ This example uses host networking on Linux. The container runs as root by defaul
 
 First-time `--ai` sign-in requires a browser and a loopback callback on `127.0.0.1`. Run `--ai` on the host unless you separately configure browser access and persistent authentication for the container.
 
+## Local web portal
+
+After `bash install.sh`, start the portal and open [http://127.0.0.1:8787](http://127.0.0.1:8787):
+
+```bash
+autorecon-portal --results-dir "$HOME/results"
+```
+
+The portal stays available independently of scans. It indexes existing `~/results/<target>/` folders, including scans started from another terminal with `autorecon -o "$HOME/results" TARGET`. New scans started in the portal have separate run folders under `~/results/portal-runs/`. The portal listens on your computer only. Connect ChatGPT with `autorecon-ai login` in a local terminal before enabling AI in the portal.
+
+To run the portal as a user service after login:
+
+```bash
+mkdir -p "$HOME/.config/systemd/user"
+cp autorecon/portal/autorecon-portal.service "$HOME/.config/systemd/user/"
+systemctl --user daemon-reload
+systemctl --user enable --now autorecon-portal.service
+```
+
+The service assumes pipx installed `autorecon-portal` in `~/.local/bin`; adjust `ExecStart` if your pipx app directory differs.
+
 ## Web proof checks
 
 Default HTTP scans include bounded GET-parameter checks for server-side template expression evaluation. The plugin saves JSON evidence and a text summary in `scans/`. A confirmed result needs both test expressions to evaluate; an inconclusive result is not proof of safety.

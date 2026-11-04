@@ -8,6 +8,7 @@ exclude = ["autorecon.py"]
 packages = [
 	{ include = "autorecon" },
 ]
+include = ["autorecon/portal/static/*", "autorecon/portal/autorecon-portal.service"]
 
 [tool.poetry.dependencies]
 python = "^3.8"
@@ -19,6 +20,7 @@ psutil = "^5.9.4"
 requests = "^2.28.1"
 toml = "^0.10.2"
 Unidecode = "^1.3.1"
+markdown-it-py = ">=3,<4"
 
 [tool.poetry.dev-dependencies]
 
@@ -27,6 +29,7 @@ autorecon = "autorecon.main:main"
 autorecon-ai = "autorecon.ai_cli:main"
 autorecon-linpeas = "autorecon.linpeas_cli:main"
 autorecon-proof = "autorecon.proof:main"
+autorecon-portal = "autorecon.portal.server:main"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

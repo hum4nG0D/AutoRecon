@@ -289,11 +289,12 @@ def review_completed_scan(result_dir, model, max_chunks=24):
 class IncrementalReport:
 	"""Save scan reviews as they finish, then write a short final report."""
 
-	def __init__(self, result_dir, model, max_chunks=100, target_address=None):
+	def __init__(self, result_dir, model, max_chunks=100, target_address=None, on_event=None):
 		self.root = Path(result_dir).expanduser().resolve()
 		self.model = model
 		self.max_chunks = max_chunks
 		self.target_address = target_address
+		self.on_event = on_event
 		self.reviewed = set()
 		self.notes = []
 		self.parts = []
@@ -330,14 +331,22 @@ class IncrementalReport:
 				self.preview.append(input_text)
 				_write_private(self.report_dir / 'ai-report-input.txt', ''.join(self.preview))
 				for name, part, total, chunk in chunks:
+					task_id = '{}/ai/{}#{}'.format(self.target_address or self.root.name, name, part)
+					fields = {'task_id': task_id, 'category': 'ai', 'source': name, 'part': part, 'parts': total}
+					self._emit('task_started', **fields)
 					self._progress('Reviewing completed scan {name} (part {part}/{total})...',
 						name=name, part=part, total=total)
-					note = _response(access_token(), self.model,
-						SECTION_INSTRUCTIONS,
-						'Scan section: {} (part {}/{})\n\n{}'.format(name, part, total, chunk))
+					try:
+						note = _response(access_token(), self.model,
+							SECTION_INSTRUCTIONS,
+							'Scan section: {} (part {}/{})\n\n{}'.format(name, part, total, chunk))
+					except Exception as exc:
+						self._emit('task_failed', error_type=type(exc).__name__, **fields)
+						raise
 					self.notes.append('### `{}`{}\n\n{}\n'.format(name.replace('`', ''), ' — part {}/{}'.format(part, total) if total > 1 else '', note))
 					self.parts.append('Section {} part {}/{}:\n{}'.format(name, part, total, note))
 					self._write_pending()
+					self._emit('task_completed', **fields)
 				self.reviewed.add(path)
 			except Exception:
 				self.failed = True
@@ -369,3 +378,7 @@ class IncrementalReport:
 			label += ' for {target_address}'
 			values['target_address'] = self.target_address
 		info(label + ': ' + message, flush=True, **values)
+
+	def _emit(self, event, **fields):
+		if self.on_event is not None:
+			self.on_event(event, **fields)

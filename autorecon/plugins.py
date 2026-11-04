@@ -239,6 +239,11 @@ class AutoRecon(object):
 		self.taglist = []
 		self.tags = []
 		self.excluded_tags = []
+		self.include_plugins = None
+		self.run_id = None
+		self.event_writer = None
+		self.event_targets = []
+		self.cancelled = False
 		self.patterns = []
 		self.errors = False
 		self.lock = asyncio.Lock()

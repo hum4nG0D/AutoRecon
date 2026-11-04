@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>AutoRecon · Web portal</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="AutoRecon web portal home"><span class="brand-name">AutoRecon</span><span class="brand-suffix">WEB PORTAL</span></a>
+      <div class="topbar-actions">
+        <button class="icon-button" id="refresh-button" type="button" title="Refresh results" aria-label="Refresh results">↻</button>
+        <button class="button button-primary" id="new-scan-button" type="button">+ New scan</button>
+      </div>
+    </header>
+    <nav class="primary-nav" aria-label="Portal views">
+      <button class="primary-tab is-active" id="nav-results" type="button" aria-current="page" aria-controls="results-page">Results <span class="count" id="targets-count">0</span></button>
+      <button class="primary-tab" id="nav-runs" type="button" aria-controls="runs-page">Current runs <span class="count" id="jobs-count">0</span></button>
+      <button class="primary-tab" id="nav-tasks" type="button" aria-controls="tasks-page">Task progress <span class="count" id="tasks-count">0</span></button>
+    </nav>
+
+    <div class="workspace" id="workspace">
+      <aside class="targets-sidebar" aria-label="Targets">
+        <div class="targets-rail-head">
+          <div class="targets-rail-title"><span class="eyebrow">RESULT INDEX</span><h2>Targets</h2></div>
+          <button class="icon-button rail-toggle" id="toggle-targets" type="button" aria-label="Collapse targets" aria-controls="target-tabs" aria-expanded="true">‹</button>
+        </div>
+        <nav class="target-list" id="target-tabs" aria-label="Target results"></nav>
+      </aside>
+
+      <main class="main-panel" id="main-content">
+        <section class="primary-page" id="results-page" aria-labelledby="nav-results">
+          <div class="page-head"><div><span class="eyebrow">RESULTS</span><h1>Target reports</h1></div></div>
+          <div class="empty-state" id="empty-state">
+            <div class="empty-glyph" aria-hidden="true">⌁</div>
+            <h2>No results yet</h2>
+            <p>Start a scan to watch progress and read its reports here. Existing results appear automatically.</p>
+            <button class="button button-secondary" id="empty-new-scan" type="button">Start a scan</button>
+          </div>
+          <div class="target-content" id="target-content" hidden>
+          <div class="target-heading">
+            <div><span class="eyebrow" id="target-subtitle">TARGET</span><h2 id="target-title"></h2></div>
+            <span class="target-status" id="target-status"></span>
+          </div>
+          <div class="view-tabs" role="tablist" aria-label="Result type">
+            <button class="view-tab is-active" id="reports-tab" role="tab" aria-selected="true" aria-controls="reports-view" type="button">Reports <span id="report-count">0</span></button>
+            <button class="view-tab" id="scans-tab" role="tab" aria-selected="false" aria-controls="scans-view" tabindex="-1" type="button">Raw scans <span id="scan-count">0</span></button>
+          </div>
+          <section class="file-view" id="reports-view" role="tabpanel" aria-labelledby="reports-tab">
+            <div class="file-rail"><div class="rail-title">REPORT FILES</div><div id="report-files" class="file-list"></div></div>
+            <article class="document-panel" aria-label="Report contents">
+              <div class="document-toolbar"><div><span class="eyebrow">REPORT</span><h3 id="document-name">Select a report</h3></div><a class="text-link" id="download-link" href="#" download hidden>Save preview ↗</a></div>
+              <div id="report-document" class="markdown-body"><p class="quiet">Choose a report on the left.</p></div>
+            </article>
+          </section>
+          <section class="file-view" id="scans-view" role="tabpanel" aria-labelledby="scans-tab" hidden>
+            <div class="file-rail"><div class="rail-title">SCAN FILES</div><div id="scan-files" class="file-list"></div></div>
+            <article class="document-panel" aria-label="Raw scan contents">
+              <div class="document-toolbar"><div><span class="eyebrow">RAW SCAN</span><h3 id="scan-document-name">Select a scan</h3></div><a class="text-link" id="scan-download-link" href="#" download hidden>Save preview ↗</a></div>
+              <pre id="scan-document" class="raw-output">Choose a scan on the left.</pre>
+            </article>
+          </section>
+          </div>
+        </section>
+        <section class="primary-page" id="runs-page" aria-labelledby="nav-runs" hidden>
+          <div class="page-head"><div><span class="eyebrow">SCAN QUEUE</span><h1>Current runs</h1><p class="page-description">Select a run to inspect its tasks.</p></div></div>
+          <div class="job-list" id="job-list"><p class="quiet">Loading runs…</p></div>
+        </section>
+        <section class="primary-page" id="tasks-page" aria-labelledby="nav-tasks" hidden>
+          <div class="page-head task-page-head">
+            <div><span class="eyebrow">LIVE ACTIVITY</span><h1>Task progress</h1></div>
+            <label class="run-picker-label" for="task-run-select">Run <select id="task-run-select" aria-label="Select run for task progress"><option value="">Choose a run</option></select></label>
+          </div>
+          <div id="task-tree" class="task-tree"><p class="quiet">Choose a run to view its tasks.</p></div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <dialog class="scan-dialog" id="scan-dialog" aria-labelledby="scan-dialog-title">
+    <form id="scan-form" method="dialog" novalidate>
+      <div class="dialog-head"><div><span class="eyebrow">NEW RUN</span><h2 id="scan-dialog-title">Start a scan</h2></div><button class="icon-button" id="close-dialog" type="button" aria-label="Close">×</button></div>
+      <div class="dialog-scroll">
+        <label class="field-label" for="scan-targets">Targets</label>
+        <textarea id="scan-targets" name="targets" rows="2" placeholder="192.168.1.71&#10;example.internal" required spellcheck="false"></textarea>
+        <p class="field-help">One IP address or hostname per line. Scan only systems you are authorized to test.</p>
+
+        <fieldset class="form-section mode-section">
+          <legend>Scan setup</legend>
+          <div class="mode-options">
+            <label class="mode-choice"><input type="radio" name="scan-mode" value="standard" checked><span><strong>Standard</strong><small>AutoRecon CLI default plugins <span id="standard-plugin-count"></span></small></span></label>
+            <label class="mode-choice"><input type="radio" name="scan-mode" value="custom"><span><strong>Custom</strong><small>Choose exactly which plugins run</small></span></label>
+          </div>
+        </fieldset>
+
+        <fieldset class="form-section">
+          <legend>Scan options</legend>
+          <label class="toggle-row"><span><strong>AI review</strong><small>Run <code>autorecon-ai login</code> in a local terminal first.</small></span><input type="checkbox" id="scan-ai" name="ai"><span class="switch" aria-hidden="true"></span></label>
+          <label class="toggle-row"><span><strong>Authenticated scan</strong><small>Run LinPEAS and SSH host checks with your local key.</small></span><input type="checkbox" id="scan-auth" name="authenticated"><span class="switch" aria-hidden="true"></span></label>
+          <div class="auth-fields" id="auth-fields" hidden>
+            <label class="field-label" for="ssh-user">SSH username</label><input id="ssh-user" type="text" autocomplete="off" placeholder="username">
+            <label class="field-label" for="ssh-key">SSH private key path</label><input id="ssh-key" type="text" autocomplete="off" placeholder="/home/user/.ssh/id_ed25519">
+            <p class="field-help">Enter the path to a key already on this computer.</p>
+          </div>
+        </fieldset>
+
+        <section class="custom-options" id="custom-options" aria-labelledby="custom-heading" hidden>
+          <div class="custom-heading"><div><span class="eyebrow">CUSTOM SETUP</span><h3 id="custom-heading">Choose plugins</h3></div><span class="selected-count" id="selected-count" aria-live="polite">0 selected</span></div>
+          <label class="field-label" for="plugin-search">Find a plugin</label>
+          <input id="plugin-search" type="search" placeholder="Search by name or service" autocomplete="off">
+          <div id="plugin-choices" class="plugin-choices"><p class="quiet">Loading plugins…</p></div>
+          <p id="plugin-no-match" class="quiet" hidden>No plugins match this search.</p>
+        </section>
+        <p class="form-error" id="scan-error" role="alert" hidden></p>
+      </div>
+      <div class="dialog-actions"><button class="button button-plain" id="cancel-dialog" type="button">Cancel</button><button class="button button-primary" id="submit-scan" type="submit">Start scan</button></div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

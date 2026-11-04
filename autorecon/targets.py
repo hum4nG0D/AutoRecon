@@ -23,6 +23,8 @@ class Target:
 		self.basedir = ''
 		self.reportdir = ''
 		self.scandir = ''
+		self.event_writer = None
+		self.scan_status = 'pending'
 		self.lock = asyncio.Lock()
 		self.ports = None
 		self.pending_services = []
