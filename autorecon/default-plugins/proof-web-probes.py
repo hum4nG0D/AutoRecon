@@ -19,6 +19,7 @@ class ProofWebProbes(ServiceScan):
 		self.add_option('manifest', help='Optional JSON file selecting exact GET URLs and parameter names instead of automatic discovery.')
 		self.add_option('timeout', default='8', help='Seconds allowed per HTTP request, at most 30.')
 		self.add_option('headers-file', help='Optional JSON request headers for authenticated web checks.')
+		self.add_list_option('modules', help='Proof modules to run (ssti, command-injection). Default: all modules.')
 
 	async def run(self, service):
 		manifest = self.get_option('manifest')
@@ -55,8 +56,9 @@ class ProofWebProbes(ServiceScan):
 			else:
 				selected = await asyncio.get_running_loop().run_in_executor(
 					None, lambda: discover_get_inputs(allowed_origin, timeout, session))
+			modules = self.get_option('modules')
 			result = await asyncio.get_running_loop().run_in_executor(
-				None, lambda: run_entries(selected, allowed_origin, output, timeout, session))
+				None, lambda: run_entries(selected, allowed_origin, output, timeout, session, modules))
 		except (OSError, ValueError, json.JSONDecodeError) as exc:
 			service.warn('Proof checks skipped: ' + str(exc))
 			return

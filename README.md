@@ -93,7 +93,7 @@ The service assumes pipx installed `autorecon-portal` in `~/.local/bin`; adjust 
 
 ## Web proof checks
 
-Default HTTP scans include bounded GET-parameter checks for server-side template expression evaluation. The plugin saves JSON evidence and a text summary in `scans/`. A confirmed result needs both test expressions to evaluate; an inconclusive result is not proof of safety.
+Default HTTP scans include bounded GET-parameter proof checks: server-side template expression evaluation and OS command injection. Each module uses nonce-tagged probes and requires two independent evaluations before reporting `confirmed`; an inconclusive result is not proof of safety. The plugin saves JSON evidence and a text summary in `scans/`.
 
 Run the verifier for one origin without a full scan:
 
@@ -101,7 +101,13 @@ Run the verifier for one origin without a full scan:
 autorecon-proof --allow-origin http://192.0.2.10:8080 --output proof-evidence.json
 ```
 
-Use `--proof-web-probes.manifest` during a scan to select exact URLs and parameters, or `--proof-web-probes.headers-file` for authenticated web headers. Run `autorecon-proof --help` for the standalone equivalents. Review evidence before sharing it.
+Select specific modules (default: all):
+
+```bash
+autorecon-proof --allow-origin http://192.0.2.10:8080 --output proof-evidence.json --module ssti --module command-injection
+```
+
+Use `--proof-web-probes.manifest` during a scan to select exact URLs and parameters, `--proof-web-probes.modules` to select modules, or `--proof-web-probes.headers-file` for authenticated web headers. Run `autorecon-proof --help` for the standalone equivalents. Review evidence before sharing it.
 
 ## Authenticated SSH checks
 
