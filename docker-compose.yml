@@ -1,0 +1,19 @@
+# Optional convenience: the run flags, declared once.
+#
+#   docker compose build                 # instead of docker build
+#   docker compose run --rm --service-ports autorecon 192.0.2.10 [-v|-vv|--ai ...]
+#
+# (--service-ports is required: `compose run` does not publish ports by default.)
+# Plain `docker run --rm -p 127.0.0.1:8787:8787 -v "$HOME/results:/results"
+# autorecon <target>` works identically; this file just remembers the flags.
+services:
+  autorecon:
+    image: autorecon
+    build:
+      context: .
+      platforms:
+        - linux/amd64
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - ${HOME}/results:/results

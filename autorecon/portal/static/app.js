@@ -35,6 +35,7 @@ const state = {
   selectedTask: null,
   selectedFile: { reports: null, scans: null },
   files: { reports: [], scans: [] },
+  proof: { confirmed: 0, total: 0, findings: [] },
   tasks: [],
   view: "reports",
   primaryView: "results",
@@ -198,6 +199,8 @@ async function selectTarget(id, navigate = false) {
   updateTargetHeading();
   $("report-count").textContent = "0";
   $("scan-count").textContent = "0";
+  $("findings-count").textContent = "0";
+  state.proof = { confirmed: 0, total: 0, findings: [] };
   $("report-document").replaceChildren(element("p", "quiet", "Loading reports…"));
   $("scan-document").textContent = "Loading scans…";
   $("download-link").hidden = true;
@@ -211,6 +214,17 @@ async function refreshFiles() {
   const request = ++state.filesRequest;
   try {
     const data = await api.get(`/api/targets/${encodeURIComponent(id)}/files`);
+    api.get(`/api/targets/${encodeURIComponent(id)}/proof`).then((proof) => {
+      if (state.selectedTarget !== id) return;
+      state.proof = proof && Array.isArray(proof.findings)
+        ? proof
+        : { confirmed: 0, total: 0, findings: [] };
+      renderFindings();
+    }).catch(() => {
+      if (state.selectedTarget !== id) return;
+      state.proof = { confirmed: 0, total: 0, findings: [] };
+      renderFindings();
+    });
     if (state.selectedTarget !== id || request !== state.filesRequest) return;
     const previousReports = state.files.reports;
     const previousScans = state.files.scans;
@@ -265,6 +279,41 @@ function renderFileList(kind) {
   }
 }
 
+function renderFindings() {
+  const list = $("findings-list");
+  const count = $("findings-count");
+  const summary = $("findings-summary");
+  const title = $("findings-title");
+  const findings = Array.isArray(state.proof.findings) ? state.proof.findings : [];
+  count.textContent = String(findings.length);
+  list.replaceChildren();
+  if (!findings.length) {
+    title.textContent = "No findings yet";
+    summary.hidden = true;
+    list.append(element("p", "quiet", "Proof checks have not produced findings for this target yet."));
+    return;
+  }
+  const order = { critical: 0, high: 1, medium: 2, low: 3 };
+  const sorted = [...findings].sort((a, b) =>
+    (order[a.severity] ?? 9) - (order[b.severity] ?? 9) ||
+    String(a.status).localeCompare(String(b.status)));
+  title.textContent = "Proof-of-exploit findings";
+  summary.hidden = false;
+  summary.textContent = `${state.proof.confirmed} confirmed of ${state.proof.total}`;
+  for (const finding of sorted) {
+    const item = element("div", "finding-item");
+    const head = element("div", "finding-head");
+    const badge = element("span", "status-badge", finding.status || "unknown");
+    badge.dataset.status = finding.status || "unknown";
+    head.append(badge);
+    head.append(element("strong", "", `${finding.severity || "?"} · ${finding.check || finding.module || "?"} (${finding.cwe || "?"})`));
+    item.append(head);
+    item.append(element("span", "finding-target", `${finding.url || "?"} — parameter \`${finding.parameter || "?"}\``));
+    if (finding.evidence_file) item.append(element("span", "finding-source", finding.evidence_file));
+    list.append(item);
+  }
+}
+
 async function selectFile(kind, file) {
   const id = state.selectedTarget;
   const request = ++state.fileRequest[kind];
@@ -315,7 +364,7 @@ function highlightSeverities(documentNode) {
 
 function selectView(view) {
   state.view = view;
-  for (const name of ["reports", "scans"]) {
+  for (const name of ["reports", "scans", "findings"]) {
     const active = name === view;
     $(name + "-view").hidden = !active;
     const tab = $(name + "-tab");
@@ -771,6 +820,7 @@ async function start() {
   $("refresh-button").addEventListener("click", refreshAll);
   $("reports-tab").addEventListener("click", () => selectView("reports"));
   $("scans-tab").addEventListener("click", () => selectView("scans"));
+  $("findings-tab").addEventListener("click", () => selectView("findings"));
   for (const name of ["reports", "scans"]) {
     $(name + "-tab").addEventListener("keydown", (event) => {
       if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;

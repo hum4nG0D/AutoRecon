@@ -60,7 +60,7 @@ config = {
 	'reports': None,
 	'plugins_dir': None,
 	'add_plugins_dir': None,
-	'output': 'results',
+	'output': os.path.expanduser(os.environ.get('AUTORECON_RESULTS', '~/results')),
 	'single_target': False,
 	'only_scans_dir': False,
 	'no_port_dirs': False,

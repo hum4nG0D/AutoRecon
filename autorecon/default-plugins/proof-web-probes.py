@@ -19,7 +19,9 @@ class ProofWebProbes(ServiceScan):
 		self.add_option('manifest', help='Optional JSON file selecting exact GET URLs and parameter names instead of automatic discovery.')
 		self.add_option('timeout', default='8', help='Seconds allowed per HTTP request, at most 30.')
 		self.add_option('headers-file', help='Optional JSON request headers for authenticated web checks.')
-		self.add_list_option('modules', help='Proof modules to run (ssti, command-injection). Default: all modules.')
+		self.add_list_option('modules', help='Proof modules to run (ssti, command-injection, sqli, lfi, ssrf, xxe). Default: all modules.')
+		self.add_choice_option('oob', ['interactsh'], help='Out-of-band callback provider for blind checks (ssrf, xxe). Default: none (blind checks are skipped).')
+		self.add_option('oob-timeout', default='10', help='Seconds to wait per blind callback, at most 60. Default: 10.')
 
 	async def run(self, service):
 		manifest = self.get_option('manifest')
@@ -57,8 +59,12 @@ class ProofWebProbes(ServiceScan):
 				selected = await asyncio.get_running_loop().run_in_executor(
 					None, lambda: discover_get_inputs(allowed_origin, timeout, session))
 			modules = self.get_option('modules')
+			oob = self.get_option('oob')
+			oob_timeout = float(self.get_option('oob-timeout') or 10)
+			if not 0 < oob_timeout <= 60:
+				raise ValueError('OOB timeout must be between 0 and 60 seconds.')
 			result = await asyncio.get_running_loop().run_in_executor(
-				None, lambda: run_entries(selected, allowed_origin, output, timeout, session, modules))
+				None, lambda: run_entries(selected, allowed_origin, output, timeout, session, modules, oob, oob_timeout))
 		except (OSError, ValueError, json.JSONDecodeError) as exc:
 			service.warn('Proof checks skipped: ' + str(exc))
 			return

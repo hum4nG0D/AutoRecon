@@ -25,6 +25,7 @@ def main(argv=None):
 		'--ssh-authenticated-host-checks.identity-file', args.identity,
 		'--ssh-authenticated-host-checks.linpeas',
 		'--ssh-authenticated-host-checks.linpeas-only',
+		'--no-portal',
 	]
 	if args.output:
 		command.extend(['--output', args.output])

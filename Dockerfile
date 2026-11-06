@@ -21,6 +21,11 @@ RUN python3 -m venv /opt/autorecon-venv \
     && /opt/autorecon-venv/bin/pip install --no-cache-dir /opt/AutoRecon
 
 ENV PATH="/opt/autorecon-venv/bin:${PATH}"
+# The image runs the same program as the host; these presets only adapt it
+# to the container: results live at /results and the portal binds all
+# interfaces so published ports can reach it.
+ENV AUTORECON_RESULTS=/results
+ENV AUTORECON_PORTAL_HOST=0.0.0.0
 
 RUN install -d -m 700 /root/.cache/AutoRecon \
     && curl --fail --location --silent --show-error --retry 3 \
@@ -31,5 +36,6 @@ RUN install -d -m 700 /root/.cache/AutoRecon \
     && test -s /root/.cache/AutoRecon/linpeas.sh \
     && chmod 600 /root/.cache/AutoRecon/linpeas.sh
 
+EXPOSE 8787
 WORKDIR /results
-CMD ["/bin/bash"]
+ENTRYPOINT ["autorecon"]

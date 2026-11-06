@@ -2,12 +2,16 @@
 
 from autorecon.proofmodules.base import ProofModule
 from autorecon.proofmodules.commandinjection import CommandInjection
+from autorecon.proofmodules.lfi import FileInclusion
+from autorecon.proofmodules.sqli import SQLInjection
+from autorecon.proofmodules.ssrf import SSRF
 from autorecon.proofmodules.ssti import TemplateExpression
+from autorecon.proofmodules.xxe import XXE
 
 
 def all_modules():
     """Every registered module, in run order. SSTI stays first for compatibility."""
-    return [TemplateExpression(), CommandInjection()]
+    return [TemplateExpression(), CommandInjection(), SQLInjection(), FileInclusion(), SSRF(), XXE()]
 
 
 def select_modules(names=None):

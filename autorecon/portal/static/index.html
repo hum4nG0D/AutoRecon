@@ -49,6 +49,7 @@
           <div class="view-tabs" role="tablist" aria-label="Result type">
             <button class="view-tab is-active" id="reports-tab" role="tab" aria-selected="true" aria-controls="reports-view" type="button">Reports <span id="report-count">0</span></button>
             <button class="view-tab" id="scans-tab" role="tab" aria-selected="false" aria-controls="scans-view" tabindex="-1" type="button">Raw scans <span id="scan-count">0</span></button>
+            <button class="view-tab" id="findings-tab" role="tab" aria-selected="false" aria-controls="findings-view" tabindex="-1" type="button">Findings <span id="findings-count">0</span></button>
           </div>
           <section class="file-view" id="reports-view" role="tabpanel" aria-labelledby="reports-tab">
             <div class="file-rail"><div class="rail-title">REPORT FILES</div><div id="report-files" class="file-list"></div></div>
@@ -63,6 +64,12 @@
               <div class="document-toolbar"><div><span class="eyebrow">RAW SCAN</span><h3 id="scan-document-name">Select a scan</h3></div><a class="text-link" id="scan-download-link" href="#" download hidden>Save preview ↗</a></div>
               <pre id="scan-document" class="raw-output">Choose a scan on the left.</pre>
             </article>
+          </section>
+          <section id="findings-view" role="tabpanel" aria-labelledby="findings-tab" hidden>
+            <div class="document-panel findings-panel" aria-label="Proof findings">
+              <div class="document-toolbar"><div><span class="eyebrow">PROOF OF EXPLOIT</span><h3 id="findings-title">No findings yet</h3></div><span class="selected-count" id="findings-summary" hidden></span></div>
+              <div id="findings-list" class="finding-list"><p class="quiet">Proof checks have not produced findings for this target yet.</p></div>
+            </div>
           </section>
           </div>
         </section>

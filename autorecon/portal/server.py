@@ -5,6 +5,7 @@ import hmac
 import ipaddress
 import json
 import mimetypes
+import os
 import re
 import secrets
 import sys
@@ -15,6 +16,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from autorecon.portal.catalog import plugin_catalog
+from autorecon.portal.control import remove_pidfile, write_pidfile
 from autorecon.portal.files import Results, target_id
 from autorecon.portal.jobs import JobManager
 from autorecon.portal.store import Store
@@ -231,6 +233,9 @@ class Handler(BaseHTTPRequestHandler):
 			if path.startswith('/api/targets/') and path.endswith('/files'):
 				identifier = unquote(path[len('/api/targets/'):-len('/files')].strip('/'))
 				return self._json(200, self.app.results.files(identifier))
+			if path.startswith('/api/targets/') and path.endswith('/proof'):
+				identifier = unquote(path[len('/api/targets/'):-len('/proof')].strip('/'))
+				return self._json(200, self.app.results.proof_findings(identifier))
 			if path == '/api/file':
 				identifier = query.get('target', [''])[0]
 				filename = query.get('path', [''])[0]
@@ -344,19 +349,22 @@ class Server(ThreadingHTTPServer):
 
 def main(argv=None):
 	parser = argparse.ArgumentParser(prog='autorecon-portal', description='View AutoRecon results and run scans in a local browser.')
-	parser.add_argument('--results-dir', default='~/results', help='Results root (default: ~/results).')
+	parser.add_argument('--results-dir', default=os.path.expanduser(os.environ.get('AUTORECON_RESULTS', '~/results')), help='Results root (default: AUTORECON_RESULTS or ~/results).')
+	parser.add_argument('--host', default='127.0.0.1', help='Bind host. Default 127.0.0.1 keeps the portal loopback-only; the Docker image passes 0.0.0.0 so published ports can reach it.')
 	parser.add_argument('--port', type=int, default=8787, help='Loopback port (default: 8787).')
 	args = parser.parse_args(argv)
 	if not 0 <= args.port <= 65535:
 		parser.error('Port must be between 0 and 65535.')
 	app = Portal(args.results_dir)
-	with Server(('127.0.0.1', args.port), app) as server:
-		print('AutoRecon portal: http://127.0.0.1:{}/'.format(server.server_port), flush=True)
+	with Server((args.host, args.port), app) as server:
+		pid_path = write_pidfile(app.results.root)
+		print('AutoRecon portal: http://{}:{}/'.format(args.host, server.server_port), flush=True)
 		try:
 			server.serve_forever(poll_interval=0.25)
 		except KeyboardInterrupt:
 			pass
 		finally:
+			remove_pidfile(pid_path)
 			app.close()
 	return 0
 

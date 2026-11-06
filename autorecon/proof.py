@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
@@ -9,13 +10,14 @@ from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 import requests
 
 from autorecon.proofmodules import all_modules, select_modules
+from autorecon.proofmodules.callbacks import create_provider
 from autorecon.proofmodules.commandinjection import CommandInjection
 from autorecon.proofmodules.http import (ProofContext, checked_origin, display_url,
                                          origin, with_parameter, write_private_text)
 from autorecon.proofmodules.ssti import TemplateExpression
 
 
-REQUEST_BUDGET = 150
+REQUEST_BUDGET = 300
 
 # Re-exported for the plugin and tests; the implementations moved to proofmodules.http.
 __all__ = ['origin', 'checked_origin', 'display_url', 'with_parameter', 'write_private_text',
@@ -134,7 +136,8 @@ def verify_ssti(url, parameter, allowed_origin, timeout=8, session=None):
     return TemplateExpression().verify(url, parameter, context)
 
 
-def run_entries(entries, allowed_origin, output_path, timeout=8, session=None, modules=None):
+def run_entries(entries, allowed_origin, output_path, timeout=8, session=None, modules=None,
+                oob=None, oob_timeout=10.0):
     scope = checked_origin(allowed_origin)
     if not isinstance(entries, list):
         raise ValueError('The manifest must be a JSON list of URL and parameter objects.')
@@ -146,29 +149,49 @@ def run_entries(entries, allowed_origin, output_path, timeout=8, session=None, m
             raise ValueError('Each entry needs string url and parameter fields.')
         if origin(item['url']) != scope:
             raise ValueError('Manifest contains an out-of-scope URL.')
-        with_parameter(item['url'], item['parameter'], 'scope-check')
+        method = str(item.get('method', 'GET')).upper()
+        if method not in ('GET', 'POST'):
+            raise ValueError('Each entry method must be GET or POST.')
+        if method == 'POST':
+            template = item.get('body_template')
+            if not isinstance(template, str) or '{value}' not in template:
+                raise ValueError('POST entries need a string body_template containing {value}.')
+        elif item.get('body_template') is not None:
+            raise ValueError('body_template is only valid with method POST.')
+        if method == 'GET':
+            with_parameter(item['url'], item['parameter'], 'scope-check')
     selected = select_modules(modules)
     needed = len(entries) * sum(module.max_requests for module in selected)
     if needed > REQUEST_BUDGET:
         raise ValueError('Selected checks need {} requests; the limit is {}. Use fewer entries or select fewer modules.'.format(needed, REQUEST_BUDGET))
-    context = ProofContext(allowed_origin, timeout=timeout, session=session)
-    findings = []
-    for item in entries:
-        for module in selected:
-            try:
-                findings.append(module.verify(item['url'], item['parameter'], context))
-            except requests.RequestException as exc:
-                findings.append(module.error_finding(item['url'], item['parameter'], type(exc).__name__))
-            except ValueError as exc:
-                findings.append(module.error_finding(item['url'], item['parameter'], str(exc)))
+    provider = create_provider(oob if oob is not None else os.environ.get('AUTORECON_OOB') or None)
+    if provider is not None:
+        provider.start()
+    try:
+        context = ProofContext(allowed_origin, timeout=timeout, session=session,
+                               callback=provider, oob_timeout=oob_timeout)
+        findings = []
+        for item in entries:
+            context.set_entry(item)
+            for module in selected:
+                try:
+                    findings.append(module.verify(item['url'], item['parameter'], context))
+                except requests.RequestException as exc:
+                    findings.append(module.error_finding(item['url'], item['parameter'], type(exc).__name__))
+                except ValueError as exc:
+                    findings.append(module.error_finding(item['url'], item['parameter'], str(exc)))
+    finally:
+        if provider is not None:
+            provider.close()
     result = {'schema_version': 2, 'allowed_origin': allowed_origin, 'findings': findings}
     write_private_text(output_path, json.dumps(result, indent=2) + '\n')
     return result
 
 
-def run_manifest(manifest_path, allowed_origin, output_path, timeout=8, session=None, modules=None):
+def run_manifest(manifest_path, allowed_origin, output_path, timeout=8, session=None, modules=None,
+                 oob=None, oob_timeout=10.0):
     entries = json.loads(Path(manifest_path).read_text(encoding='utf8'))
-    return run_entries(entries, allowed_origin, output_path, timeout, session, modules)
+    return run_entries(entries, allowed_origin, output_path, timeout, session, modules, oob, oob_timeout)
 
 
 def write_summary(result, output_path):
@@ -180,6 +203,8 @@ def write_summary(result, output_path):
                       'Severity: ' + str(finding.get('severity', '')),
                       'Check: ' + finding['check'],
                       'URL: ' + finding['url'], 'Parameter: ' + finding['parameter']])
+        if finding.get('reason'):
+            lines.append('Reason: ' + str(finding['reason']))
         for probe in finding.get('probes', []):
             lines.append(probe['kind'] + ': HTTP ' + str(probe['status']) +
                          ', evaluated=' + str(probe['evaluated']) +
@@ -203,6 +228,76 @@ def session_from_headers(path):
     return session
 
 
+SEVERITY_ORDER = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
+
+
+def collect_findings(result_dir):
+    """Parse every proof evidence file under <result_dir>/scans.
+
+    Returns a list of finding dicts each carrying an extra 'evidence_file'
+    path relative to result_dir.
+    """
+    root = Path(result_dir).expanduser().resolve()
+    scans = root / 'scans'
+    if not scans.is_dir():
+        return []
+    findings = []
+    for path in sorted(scans.rglob('*_proof_web.json')):
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding='utf8'))
+        except (OSError, ValueError):
+            continue
+        for finding in data.get('findings', []):
+            if isinstance(finding, dict):
+                item = dict(finding)
+                item['evidence_file'] = str(path.relative_to(root))
+                findings.append(item)
+    return findings
+
+
+def write_findings_report(result_dir):
+    """Write report/proof-findings.md for a target; None if no findings exist."""
+    root = Path(result_dir).expanduser().resolve()
+    findings = collect_findings(root)
+    if not findings:
+        return None
+    confirmed = [item for item in findings if item.get('status') == 'confirmed']
+    inconclusive = [item for item in findings if item.get('status') == 'inconclusive']
+    skipped = [item for item in findings if item.get('status') not in ('confirmed', 'inconclusive')]
+
+    def line(item):
+        return '- **{}** `{}` ({}, {}) — `{}` parameter `{}` — evidence: `{}`'.format(
+            item.get('severity', '?'), item.get('check', '?'), item.get('module', '?'),
+            item.get('cwe', '?'), item.get('url', '?'), item.get('parameter', '?'),
+            item.get('evidence_file', '?'))
+
+    def sort_key(item):
+        return (SEVERITY_ORDER.get(item.get('severity'), 9), item.get('module', ''))
+
+    lines = ['# Proof-of-exploit findings', '',
+             'Machine-verified by bounded proof checks. `confirmed` requires a deterministic, '
+             'replayable signal (see each evidence file for full probe detail).', '']
+    if confirmed:
+        lines.extend(['## Confirmed ({})'.format(len(confirmed)), ''])
+        lines.extend(line(item) for item in sorted(confirmed, key=sort_key))
+        lines.append('')
+    if inconclusive:
+        lines.extend(['## Inconclusive ({})'.format(len(inconclusive)), ''])
+        lines.extend(line(item) for item in sorted(inconclusive, key=sort_key))
+        lines.append('')
+    if skipped:
+        lines.extend(['## Skipped ({})'.format(len(skipped)), ''])
+        lines.extend(line(item) for item in sorted(skipped, key=sort_key))
+        lines.append('')
+    report_dir = root / 'report'
+    report_dir.mkdir(exist_ok=True)
+    path = report_dir / 'proof-findings.md'
+    write_private_text(path, '\n'.join(lines))
+    return path
+
+
 def main():
     parser = argparse.ArgumentParser(description='Discover GET inputs and run bounded HTTP proof checks.')
     parser.add_argument('--manifest', help='Optional JSON list of {"url": ..., "parameter": ...} objects')
@@ -211,15 +306,20 @@ def main():
     parser.add_argument('--timeout', type=float, default=8)
     parser.add_argument('--module', action='append', choices=[module.name for module in all_modules()],
                         metavar='NAME', help='Proof module to run; repeat to combine. Default: all modules.')
+    parser.add_argument('--oob', choices=['interactsh'],
+                        help='Out-of-band callback provider for blind checks (ssrf, xxe). Default: none (blind checks are skipped).')
+    parser.add_argument('--oob-timeout', type=float, default=10.0, help='Seconds to wait per blind callback (default: 10).')
     parser.add_argument('--headers-file', help='Optional JSON request headers, such as Cookie or Authorization')
     args = parser.parse_args()
     try:
         session = session_from_headers(args.headers_file) if args.headers_file else None
         if args.manifest:
-            result = run_manifest(args.manifest, args.allow_origin, args.output, args.timeout, session, args.module)
+            result = run_manifest(args.manifest, args.allow_origin, args.output, args.timeout, session, args.module,
+                                  args.oob, args.oob_timeout)
         else:
             entries = discover_get_inputs(args.allow_origin, args.timeout, session)
-            result = run_entries(entries, args.allow_origin, args.output, args.timeout, session, args.module)
+            result = run_entries(entries, args.allow_origin, args.output, args.timeout, session, args.module,
+                                 args.oob, args.oob_timeout)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         parser.error(str(exc))
     write_summary(result, str(Path(args.output).with_suffix('.txt')))

@@ -65,7 +65,7 @@ class JobManager:
 		args = [sys.executable, '-m', 'autorecon.main', job['target'],
 		        '-o', str(self.results_dir / job['output_root']),
 		        '--events-file', str(events_path), '--disable-keyboard-control',
-		        '--include-plugins', ','.join(job['include_plugins'])]
+		        '--include-plugins', ','.join(job['include_plugins']), '--no-portal']
 		if job['ai']:
 			args.append('--ai')
 		if job['linpeas']:

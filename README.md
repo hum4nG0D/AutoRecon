@@ -28,9 +28,11 @@ For alternate directory enumeration tools, install `dirb` or `dirsearch` if desi
 ## Quick start
 
 ```bash
-autorecon -o "$HOME/results" 192.0.2.10
+autorecon 192.0.2.10
 autorecon --list plugins
 ```
+
+Results go to `~/results` by default (created automatically); override with `-o`. Every scan also starts the local web portal at http://127.0.0.1:8787 — open it while the scan runs to watch progress, or afterwards to browse reports. Stop the portal with `autorecon stop`; pass `--no-portal` to skip starting it.
 
 Each target gets its own directory:
 
@@ -40,7 +42,7 @@ Each target gets its own directory:
 └── scans/    # raw tool output and suggested manual commands
 ```
 
-The default output root is `./results` if `-o` is omitted. Suggested password testing commands in `scans/_manual_commands.txt` are for manual use; the default SMTP user enumeration plugin may invoke Hydra.
+The default output root is `~/results` if `-o` is omitted. Suggested password testing commands in `scans/_manual_commands.txt` are for manual use; the default SMTP user enumeration plugin may invoke Hydra.
 
 ## Common options
 
@@ -58,27 +60,52 @@ Run `autorecon --help` for the full option list.
 
 ## Docker
 
-The Dockerfile builds this checkout using Kali tools. Mount a host results directory and pass `-o /results` so output persists outside the container:
+The Dockerfile builds this checkout using Kali tools. The image has no wrapper script: the container entrypoint **is** the `autorecon` CLI, preset with two environment variables (`AUTORECON_RESULTS=/results`, `AUTORECON_PORTAL_HOST=0.0.0.0`), so Docker behaves exactly like a local install — one command runs the scan, starts the web portal, and creates the results directory if needed. Mount a host results directory to keep the output after the container exits — Docker creates it automatically when missing:
 
 ```bash
-docker build -t autorecon:local .
-mkdir -p "$HOME/results"
-docker run --rm --network host -v "$HOME/results:/results" autorecon:local autorecon -o /results --disable-keyboard-control 192.0.2.10
+docker build -t autorecon .
+docker run --rm -p 127.0.0.1:8787:8787 -v "$HOME/results:/results" autorecon 192.0.2.10
 ```
 
-This example uses host networking on Linux. The container runs as root by default, so files written to the host results directory may be root-owned.
+Open http://127.0.0.1:8787 while the scan runs to watch progress live; the portal stops when the scan ends. Verbosity and AI options pass straight through:
 
-First-time `--ai` sign-in requires a browser and a loopback callback on `127.0.0.1`. Run `--ai` on the host unless you separately configure browser access and persistent authentication for the container.
+```bash
+docker run --rm -p 127.0.0.1:8787:8787 -v "$HOME/results:/results" autorecon 192.0.2.10 -vv
+docker run --rm -p 127.0.0.1:8787:8787 -v "$HOME/results:/results" autorecon 192.0.2.10 --ai
+```
+
+For `--ai`, connect ChatGPT on the host first and mount the session into the container: add `-v "$HOME/.config/AutoRecon:/root/.config/AutoRecon"`. Run the portal on its own with `docker run --rm -p 127.0.0.1:8787:8787 -v "$HOME/results:/results" autorecon portal`. On Linux you can add `--network host` and omit the `-p` flag.
+
+Stopping: the portal stops automatically when the scan ends (the container exits and takes the portal with it). `docker stop <container>` ends a detached container and its scan together. To stop just the portal inside a still-running container, use `docker exec <container> autorecon stop`.
+
+### Shorter commands
+
+`-p` and `-v` are the two places the container touches your machine (your port 8787, your `~/results`), which is why they can't be baked into the image. Two ways to type less:
+
+- **Shell alias** (shortest — add to `~/.zshrc`): then `autorecon 192.0.2.10 -vv` just works:
+
+  ```bash
+  autorecon() { docker run --rm -p 127.0.0.1:8787:8787 -v "$HOME/results:/results" autorecon "$@"; }
+  ```
+
+- **Docker Compose** (no alias needed; flags live in `docker-compose.yml`):
+
+  ```bash
+  docker compose build
+  docker compose run --rm --service-ports autorecon 192.0.2.10 -vv
+  ```
+
+Proof-of-exploit checks run automatically against every web service the scan finds; no flag is needed. The container runs as root by default, so files written to the host results directory may be root-owned.
 
 ## Local web portal
 
-After `bash install.sh`, start the portal and open [http://127.0.0.1:8787](http://127.0.0.1:8787):
+The portal starts automatically with every scan and stays available afterwards, serving http://127.0.0.1:8787. To run it on its own:
 
 ```bash
-autorecon-portal --results-dir "$HOME/results"
+autorecon portal
 ```
 
-The portal stays available independently of scans. It indexes existing `~/results/<target>/` folders, including scans started from another terminal with `autorecon -o "$HOME/results" TARGET`. New scans started in the portal have separate run folders under `~/results/portal-runs/`. The portal listens on your computer only. Connect ChatGPT with `autorecon-ai login` in a local terminal before enabling AI in the portal.
+Stop it with `autorecon stop`. The portal listens on your computer only. It indexes existing `~/results/<target>/` folders, including scans started from another terminal with `autorecon 192.0.2.10`. New scans started in the portal have separate run folders under `~/results/portal-runs/`. Connect ChatGPT with `autorecon-ai login` in a local terminal before enabling AI in the portal.
 
 To run the portal as a user service after login:
 
@@ -93,7 +120,7 @@ The service assumes pipx installed `autorecon-portal` in `~/.local/bin`; adjust 
 
 ## Web proof checks
 
-Default HTTP scans include bounded GET-parameter proof checks: server-side template expression evaluation and OS command injection. Each module uses nonce-tagged probes and requires two independent evaluations before reporting `confirmed`; an inconclusive result is not proof of safety. The plugin saves JSON evidence and a text summary in `scans/`.
+Default HTTP scans include bounded GET-parameter proof checks: server-side template expression evaluation, OS command injection, SQL injection (time-based), local file inclusion, plus blind SSRF and XXE when an out-of-band callback provider is enabled. Each module uses nonce-tagged probes and requires a deterministic signal — evaluated arithmetic, delays that track requested SLEEP durations, file-content markers, or a callback interaction carrying the probe nonce — before reporting `confirmed`; an inconclusive result is not proof of safety, and blind checks without a configured callback report `skipped`. The plugin saves JSON evidence and a text summary in `scans/`.
 
 Run the verifier for one origin without a full scan:
 
@@ -104,10 +131,31 @@ autorecon-proof --allow-origin http://192.0.2.10:8080 --output proof-evidence.js
 Select specific modules (default: all):
 
 ```bash
-autorecon-proof --allow-origin http://192.0.2.10:8080 --output proof-evidence.json --module ssti --module command-injection
+autorecon-proof --allow-origin http://192.0.2.10:8080 --output proof-evidence.json --module ssti --module command-injection --module sqli --module lfi
 ```
 
 Use `--proof-web-probes.manifest` during a scan to select exact URLs and parameters, `--proof-web-probes.modules` to select modules, or `--proof-web-probes.headers-file` for authenticated web headers. Run `autorecon-proof --help` for the standalone equivalents. Review evidence before sharing it.
+
+### Out-of-band (blind) checks
+
+SSRF and XXE cannot be proven in-band, so they need a callback provider. AutoRecon implements the interactsh wire protocol directly (no external client binary) and talks to ProjectDiscovery's open OOB service — the server sees only random nonce subdomains, never target data:
+
+```bash
+autorecon-proof --allow-origin http://192.0.2.10:8080 --output proof-evidence.json --oob interactsh
+```
+
+Blind checks correlate nonce-tagged callback URLs: `confirmed` only when an interaction carrying the probe nonce arrives. Polling is bounded (per-callback `--oob-timeout`, default 10 s, and a run-level budget). Without `--oob`, blind checks report `skipped` — they are never silently downgraded. The same options exist on scans as `--proof-web-probes.oob` and `--proof-web-probes.oob-timeout`, or set `AUTORECON_OOB=interactsh`. For self-hosting, `autorecon.proofmodules.callbacks.InteractshProvider` accepts a server via `server=` and an auth `token=`. Note: some ISPs' security filters block the public `oast.*` domains; the provider reports this with a clear error.
+
+POST endpoints can be tested through the manifest (auto-discovery stays GET-only for safety) by adding `method`, `body_template` (must contain `{value}`), and an optional `content_type` to an entry:
+
+```json
+[{"url": "http://192.0.2.10:8080/api/lookup", "parameter": "q",
+  "method": "POST", "body_template": "{\"q\": \"{value}\"}", "content_type": "application/json"}]
+```
+
+### Findings everywhere
+
+Confirmed proof checks surface in three more places: the scan writes a consolidated `report/proof-findings.md` (severity-ordered, evidence-linked) when a run finishes; the portal's per-target **Findings** tab lists every finding with severity/status badges; and the AI report leads with a machine-confirmed findings digest so verified exploits rank above anything inferred from raw scan output.
 
 ## Authenticated SSH checks
 

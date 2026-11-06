@@ -207,6 +207,18 @@ class Results:
 				        if item.get('run_id') == run_id and item.get('sequence', 0) > after]
 		raise FileNotFoundError('CLI job not found.')
 
+	def proof_findings(self, identifier):
+		"""Consolidated proof-of-exploit findings for a target (probe detail stripped)."""
+		from autorecon.proof import collect_findings
+		root = self.target_path(identifier)
+		findings = []
+		for item in collect_findings(root):
+			item.pop('probes', None)
+			findings.append(item)
+		confirmed = sum(1 for item in findings if item.get('status') == 'confirmed')
+		return {'target_id': identifier, 'confirmed': confirmed,
+		        'total': len(findings), 'findings': findings}
+
 	def file(self, identifier, relative_path):
 		listed = {item['path']: item for group in ('reports', 'scans')
 		          for item in self.files(identifier)[group]}

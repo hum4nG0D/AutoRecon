@@ -45,12 +45,15 @@ class ProofModule(object):
                 'severity': self.severity, 'cwe': self.cwe, 'status': 'error',
                 'url': display_url(url), 'parameter': parameter, 'error': message}
 
-    def probe_entry(self, kind, status, payload, expected, evaluated, body):
+    def probe_entry(self, kind, status, payload, expected, evaluated, body, delay=None):
         match = expected if evaluated else payload
         offset = body.find(match) if match else -1
         excerpt = body[max(0, offset - 60):offset + len(match) + 60] if offset >= 0 else ''
-        return {'kind': kind, 'status': status, 'payload': payload,
-                'expected': expected, 'evaluated': evaluated, 'excerpt': excerpt}
+        entry = {'kind': kind, 'status': status, 'payload': payload,
+                 'expected': expected, 'evaluated': evaluated, 'excerpt': excerpt}
+        if delay is not None:
+            entry['delay'] = delay
+        return entry
 
     def verify(self, url, parameter, context):
         raise NotImplementedError

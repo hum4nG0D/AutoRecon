@@ -1011,6 +1011,7 @@ async def run():
 	parser.add_argument('--proxychains', action='store_true', help='Use if you are running AutoRecon via proxychains. Default: %(default)s')
 	parser.add_argument('--disable-sanity-checks', action='store_true', help='Disable sanity checks that would otherwise prevent the scans from running. Default: %(default)s')
 	parser.add_argument('--disable-keyboard-control', action='store_true', help='Disables keyboard control ([s]tatus, Up, Down) if you are in SSH or Docker.')
+	parser.add_argument('--no-portal', action='store_true', help='Do not start the local web portal automatically. Default: the portal starts with every scan and keeps running afterwards.')
 	parser.add_argument('--ignore-plugin-checks', action='store_true', help='Ignores errors from plugin check functions that would otherwise prevent AutoRecon from running. Default: %(default)s')
 	parser.add_argument('--force-services', action='store', nargs='+', metavar='SERVICE', help='A space separated list of services in the following style: tcp/80/http tcp/443/https/secure')
 	parser.add_argument('-mpti', '--max-plugin-target-instances', action='store', nargs='+', metavar='PLUGIN:NUMBER', help='A space separated list of plugin slugs with the max number of instances (per target) in the following style: nmap-http:2 dirbuster:1. Default: %(default)s')
@@ -1648,6 +1649,17 @@ async def run():
 	if errors:
 		sys.exit(1)
 
+	if not args.no_portal:
+		try:
+			from autorecon.portal.control import start_portal
+			web_portal_host = os.environ.get('AUTORECON_PORTAL_HOST', '127.0.0.1')
+			web_portal_pid = start_portal(os.path.abspath(os.path.expanduser(config['output'])), host=web_portal_host)
+			if web_portal_pid:
+				web_portal_display = 'localhost' if web_portal_host == '0.0.0.0' else web_portal_host
+				info('Web portal: {bblue}http://' + web_portal_display + ':8787/{rst} (pid ' + str(web_portal_pid) + '; stop it with {byellow}autorecon stop{rst})')
+		except Exception as ex:
+			warn('Web portal could not be started: ' + str(ex))
+
 	config['port_scan_plugin_count'] = port_scan_plugin_count
 	autorecon.run_id = uuid.uuid4().hex
 	if args.events_file:
@@ -1658,6 +1670,10 @@ async def run():
 	num_initial_targets = max(1, math.ceil(config['max_port_scans'] / port_scan_plugin_count))
 
 	start_time = time.time()
+
+	if not sys.stdin.isatty():
+		# No interactive terminal (e.g. Docker without -it): keyboard control is impossible.
+		config['disable_keyboard_control'] = True
 
 	if not config['disable_keyboard_control']:
 		terminal_settings = termios.tcgetattr(sys.stdin.fileno())
@@ -1757,6 +1773,15 @@ async def run():
 		info('{bright}Finished scanning all targets in ' + elapsed_time + '!{rst}')
 		info('{bright}Don\'t forget to check out more commands to run manually in the _manual_commands.txt file in each target\'s scans directory!')
 
+		from autorecon.proof import write_findings_report
+		for target in autorecon.completed_targets:
+			try:
+				report_path = write_findings_report(target.basedir)
+				if report_path:
+					info('Proof findings report: {bblue}' + str(report_path) + '{rst}')
+			except Exception as ex:
+				warn('Could not write proof findings report for ' + target.address + ': ' + str(ex))
+
 	if autorecon.missing_services:
 		warn('{byellow}AutoRecon identified the following services, but could not match them to any plugins based on the service name. Please report these to Tib3rius: ' + ', '.join(autorecon.missing_services) + '{rst}')
 
@@ -1766,6 +1791,24 @@ async def run():
 			termios.tcsetattr(sys.stdin, termios.TCSADRAIN, terminal_settings)
 
 def main():
+	# Subcommands that bypass the normal scan flow.
+	if len(sys.argv) > 1 and sys.argv[1] == 'stop':
+		from autorecon.portal.control import stop_portal
+		results_dir = os.path.expanduser(os.environ.get('AUTORECON_RESULTS', '~/results'))
+		rest = sys.argv[2:]
+		if '--results-dir' in rest:
+			index = rest.index('--results-dir')
+			if index + 1 < len(rest):
+				results_dir = rest[index + 1]
+		if stop_portal(results_dir):
+			info('Web portal stopped for {byellow}' + results_dir + '{rst}.')
+		else:
+			info('No web portal is running for {byellow}' + results_dir + '{rst}.')
+		return
+	if len(sys.argv) > 1 and sys.argv[1] == 'portal':
+		# Re-exec as the portal module so the process command line identifies
+		# it unambiguously for `autorecon stop`.
+		os.execv(sys.executable, [sys.executable, '-m', 'autorecon.portal.server'] + sys.argv[2:])
 	# Capture Ctrl+C and cancel everything.
 	signal.signal(signal.SIGINT, cancel_all_tasks)
 	try:
