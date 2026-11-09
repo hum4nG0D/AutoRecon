@@ -209,6 +209,7 @@ input[type=checkbox]{accent-color:#39ff14}
 .finding-target{font-size:11px;color:#b9e8c8;overflow-wrap:anywhere}
 .finding-source{font-size:10px;color:var(--muted)}
 .status-badge[data-status="confirmed"]{color:var(--green);background:#0b3d14;border-color:#1f8a3a}
+.status-badge[data-status="matched"]{color:var(--blue);background:#04303a;border-color:#0e5a6e}
 .status-badge[data-status="inconclusive"]{color:var(--amber);background:#38300a;border-color:#8a761f}
 .status-badge[data-status="skipped"]{color:var(--muted);background:#0b1410}
 .status-badge[data-status="error"]{color:var(--red);background:#3d0a14;border-color:#8a1f36}

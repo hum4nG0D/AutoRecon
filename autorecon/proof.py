@@ -235,8 +235,10 @@ def collect_findings(result_dir):
     """Parse every proof evidence file under <result_dir>/scans.
 
     Returns a list of finding dicts each carrying an extra 'evidence_file'
-    path relative to result_dir.
+    path relative to result_dir. Includes normalized signature-scan matches
+    (status 'matched') alongside proof-module findings.
     """
+    from autorecon.signature import load_signatures
     root = Path(result_dir).expanduser().resolve()
     scans = root / 'scans'
     if not scans.is_dir():
@@ -254,6 +256,7 @@ def collect_findings(result_dir):
                 item = dict(finding)
                 item['evidence_file'] = str(path.relative_to(root))
                 findings.append(item)
+    findings.extend(load_signatures(root))
     return findings
 
 
@@ -264,24 +267,38 @@ def write_findings_report(result_dir):
     if not findings:
         return None
     confirmed = [item for item in findings if item.get('status') == 'confirmed']
+    matched = [item for item in findings if item.get('status') == 'matched']
     inconclusive = [item for item in findings if item.get('status') == 'inconclusive']
-    skipped = [item for item in findings if item.get('status') not in ('confirmed', 'inconclusive')]
+    skipped = [item for item in findings if item.get('status') not in ('confirmed', 'matched', 'inconclusive')]
 
     def line(item):
-        return '- **{}** `{}` ({}, {}) — `{}` parameter `{}` — evidence: `{}`'.format(
-            item.get('severity', '?'), item.get('check', '?'), item.get('module', '?'),
-            item.get('cwe', '?'), item.get('url', '?'), item.get('parameter', '?'),
-            item.get('evidence_file', '?'))
+        text = '- **{}** `{}` ({}, {})'.format(
+            item.get('severity', '?'), item.get('check', '?'),
+            item.get('module', '?'), item.get('cwe', '?'))
+        if item.get('cve'):
+            text += ' [{}]'.format(', '.join(item['cve']) if isinstance(item['cve'], list) else item['cve'])
+        text += ' — `{}`'.format(item.get('url', '?'))
+        if item.get('parameter'):
+            text += ' parameter `{}`'.format(item['parameter'])
+        if item.get('bridge_module'):
+            text += ' — confirmed via `{}` bridge'.format(item['bridge_module'])
+        text += ' — evidence: `{}`'.format(item.get('evidence_file', '?'))
+        return text
 
     def sort_key(item):
         return (SEVERITY_ORDER.get(item.get('severity'), 9), item.get('module', ''))
 
     lines = ['# Proof-of-exploit findings', '',
-             'Machine-verified by bounded proof checks. `confirmed` requires a deterministic, '
+             'Machine-verified by bounded proof checks; signature matches are '
+             'detections awaiting verification. `confirmed` requires a deterministic, '
              'replayable signal (see each evidence file for full probe detail).', '']
     if confirmed:
         lines.extend(['## Confirmed ({})'.format(len(confirmed)), ''])
         lines.extend(line(item) for item in sorted(confirmed, key=sort_key))
+        lines.append('')
+    if matched:
+        lines.extend(['## Matched signatures ({}) — unverified detections'.format(len(matched)), ''])
+        lines.extend(line(item) for item in sorted(matched, key=sort_key))
         lines.append('')
     if inconclusive:
         lines.extend(['## Inconclusive ({})'.format(len(inconclusive)), ''])

@@ -4,6 +4,11 @@ AutoRecon runs port and service enumeration, then saves raw scan output and repo
 
 Run scans only against systems you are authorized to assess.
 
+## Platforms
+
+- **Kali Linux** is the supported target for a native install (below) — the scanning tools are packaged for it, and the test suite is verified on Kali's Python.
+- **macOS, Windows, and other Linux distributions** should use the [Docker image](#docker) (below). It bundles the full Kali toolset — including `nuclei` — and needs nothing on the host except Docker. Do not run `install.sh` on macOS; use Docker.
+
 ## Install on Kali Linux
 
 AutoRecon calls external tools. Install the tools and `pipx` first:
@@ -156,6 +161,21 @@ POST endpoints can be tested through the manifest (auto-discovery stays GET-only
 ### Findings everywhere
 
 Confirmed proof checks surface in three more places: the scan writes a consolidated `report/proof-findings.md` (severity-ordered, evidence-linked) when a run finishes; the portal's per-target **Findings** tab lists every finding with severity/status badges; and the AI report leads with a machine-confirmed findings digest so verified exploits rank above anything inferred from raw scan output.
+
+## Signature scanning (opt-in)
+
+For detection breadth, the `signature-scan` plugin runs [nuclei](https://github.com/projectdiscovery/nuclei) (10,000+ community templates) against each HTTP service. It is **not** part of the default scan — enable it explicitly:
+
+```bash
+autorecon <target> --tags +signatures
+docker run --rm -p 127.0.0.1:8787:8787 -v "$HOME/results:/results" autorecon <target> --tags +signatures
+```
+
+On a native Kali install, install nuclei first (a `linux_amd64` binary from the [releases page](https://github.com/projectdiscovery/nuclei/releases), or `go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest`); the Docker image ships it.
+
+Every run, the plugin first checks for and applies nuclei binary and template updates (`nuclei -update -ut`); disable with `--signature-scan.skip-update`. Tune the scan with `--signature-scan.severity`, `--signature-scan.templates`, `--signature-scan.tags`, `--signature-scan.rate-limit`, `--signature-scan.timeout`, `--signature-scan.extras`, or `--signature-scan.disable-oob` to turn off nuclei's interactsh callbacks. Output lands in `scans/*_signatures.jsonl` (raw) and `scans/*_signatures.json` (normalized).
+
+Signature matches are **detections, not proofs**: they are recorded with status `matched` and appear in their own "unverified detections" section of `report/proof-findings.md` and with a distinct badge in the portal's Findings tab. By default, the **confirmation bridge** then re-runs each matched finding's input through the proof module for its class (sqli, command injection, SSTI, LFI, SSRF, XXE — mapped from the template's tags): matches that verify are upgraded to `confirmed` with full probe evidence, burning down the false-positive backlog the way Netsparker's proof engine does. Disable with `--signature-scan.no-bridge`, and pass `--signature-scan.oob interactsh` to give blind bridge checks their callback provider.
 
 ## Authenticated SSH checks
 

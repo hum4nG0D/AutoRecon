@@ -5,7 +5,7 @@ LABEL org.opencontainers.image.source="https://github.com/hum4nG0D/AutoRecon"
 ARG DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-venv git ca-certificates curl \
+    python3 python3-venv git ca-certificates curl unzip \
     seclists bind9-dnsutils dnsrecon enum4linux \
     feroxbuster gobuster ffuf dirb dirsearch \
     hydra impacket-scripts nbtscan nikto nmap nfs-common \
@@ -35,6 +35,16 @@ RUN install -d -m 700 /root/.cache/AutoRecon \
         https://github.com/peass-ng/PEASS-ng/releases/latest/download/linpeas.sh \
     && test -s /root/.cache/AutoRecon/linpeas.sh \
     && chmod 600 /root/.cache/AutoRecon/linpeas.sh
+
+ARG NUCLEI_VERSION=3.11.1
+RUN curl --fail --location --silent --show-error --retry 3 \
+        --connect-timeout 10 --max-time 300 \
+        --proto '=https' --proto-redir '=https' \
+        --output /tmp/nuclei.zip \
+        "https://github.com/projectdiscovery/nuclei/releases/download/v${NUCLEI_VERSION}/nuclei_${NUCLEI_VERSION}_linux_amd64.zip" \
+    && unzip -j -o /tmp/nuclei.zip nuclei -d /usr/local/bin \
+    && chmod +x /usr/local/bin/nuclei \
+    && rm -f /tmp/nuclei.zip
 
 EXPOSE 8787
 WORKDIR /results
