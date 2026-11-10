@@ -63,12 +63,138 @@ The default output root is `~/results` if `-o` is omitted. Suggested password te
 
 Run `autorecon --help` for the full option list.
 
+## Command reference
+
+### Core scanning
+
+```bash
+autorecon 192.0.2.10                          # basic scan; results → ~/results, portal auto-starts
+autorecon 192.0.2.10 -v                       # show commands as they run
+autorecon 192.0.2.10 -vv                      # full command detail
+autorecon 192.0.2.10 -o /tmp/engagement       # custom results root
+autorecon 192.0.2.10 --ports T:22,80,443,U:53 # specific ports only
+autorecon 192.0.2.10 --tags +signatures       # add signature scanning (opt-in)
+autorecon 192.0.2.10 --exclude-tags proof,bruteforce
+autorecon -t targets.txt                      # scan a target list
+autorecon 10.0.0.0/24                         # CIDR range
+autorecon 192.0.2.10 --timeout 60             # abandon the whole run after 60 min
+autorecon 192.0.2.10 --target-timeout 30      # abandon one target after 30 min
+autorecon 192.0.2.10 --no-portal              # don't start the web portal
+autorecon 192.0.2.10 --single-target          # write output straight into -o dir
+autorecon --list plugins                      # list all plugins and tags
+```
+
+### Portal
+
+```bash
+autorecon portal                     # portal standalone (indexes ~/results)
+autorecon stop                       # stop the auto-started portal
+autorecon stop --results-dir /other  # stop the portal for a different results root
+```
+
+### Proof-of-exploit checks
+
+```bash
+# Standalone against one origin (no full scan needed)
+autorecon-proof --allow-origin http://192.0.2.10:8080 --output proof.json
+
+# Pick modules (default: all in-band modules; ssrf/xxe need --oob)
+autorecon-proof --allow-origin http://192.0.2.10:8080 --output proof.json \
+    --module ssti --module command-injection
+
+# Blind checks via interactsh (needs internet; some ISP filters block oast.*)
+autorecon-proof --allow-origin http://192.0.2.10:8080 --output proof.json \
+    --oob interactsh --oob-timeout 15
+
+# Authenticated target, exact endpoints via manifest
+autorecon-proof --allow-origin https://192.0.2.10 --output proof.json \
+    --headers-file auth-headers.json --manifest entries.json
+```
+
+The same knobs exist mid-scan as plugin flags: `--proof-web-probes.modules sqli lfi`, `--proof-web-probes.oob interactsh`, `--proof-web-probes.headers-file`, `--proof-web-probes.timeout`.
+
+### Signature scanning (nuclei)
+
+```bash
+autorecon 192.0.2.10 --tags +signatures       # enable (nuclei self-updates each run)
+
+autorecon 192.0.2.10 --tags +signatures \
+    --signature-scan.severity critical high \
+    --signature-scan.tags cve sqli \
+    --signature-scan.templates /path/to/custom-templates \
+    --signature-scan.rate-limit 50 \
+    --signature-scan.extras '-header "X-Auth: token"'
+
+    --signature-scan.skip-update     # skip the per-run nuclei/template update
+    --signature-scan.no-bridge       # don't auto-confirm matches via proof modules
+    --signature-scan.disable-oob     # no nuclei interactsh callbacks
+    --signature-scan.oob interactsh  # callback provider for blind bridge checks
+```
+
+### AI reports (ChatGPT plan)
+
+```bash
+autorecon-ai login                     # one-time browser sign-in
+autorecon-ai status                    # check connection
+autorecon-ai models                    # list available models
+autorecon 192.0.2.10 --ai              # auto-review during the scan
+autorecon 192.0.2.10 --ai --ai-model <slug> --ai-max-chunks 50
+
+# Manual flow: preview the redacted input before sending
+autorecon-ai report ~/results/192.0.2.10
+less ~/results/192.0.2.10/report/ai-report-input.txt
+autorecon-ai report ~/results/192.0.2.10 --model <slug> --send
+autorecon-ai logout
+```
+
+### Authenticated SSH checks
+
+```bash
+autorecon 192.0.2.10 --linpeas -u audit -i ~/.ssh/audit_key     # full scan + LinPEAS
+
+autorecon-linpeas 192.0.2.10 -u audit -i ~/.ssh/audit_key       # LinPEAS only (default port 22)
+autorecon-linpeas 192.0.2.10 -u audit -i ~/.ssh/audit_key -p 2222 -o ~/results-rerun --ai
+```
+
+Plugin-level equivalents: `--ssh-authenticated-host-checks.username`, `.identity-file`, `.linpeas-timeout`, `.linpeas-section`.
+
+### Docker (macOS / Windows / non-Kali)
+
+```bash
+docker build --platform linux/amd64 -t autorecon .
+
+docker run --rm -p 127.0.0.1:8787:8787 -v "$HOME/results:/results" \
+    autorecon 192.0.2.10 -vv
+
+docker run --rm -p 127.0.0.1:8787:8787 -v "$HOME/results:/results" \
+    -v "$HOME/.config/AutoRecon:/root/.config/AutoRecon" \
+    autorecon 192.0.2.10 --ai --tags +signatures
+
+docker run --rm -p 127.0.0.1:8787:8787 -v "$HOME/results:/results" autorecon portal
+
+docker compose build
+docker compose run --rm --service-ports autorecon 192.0.2.10 -vv
+
+git pull && docker build --platform linux/amd64 -t autorecon .   # update
+```
+
+### Day-two operations
+
+```bash
+autorecon stop                                                  # stop the portal
+docker container prune                                          # clean stopped scan containers
+less ~/results/<target>/scans/_manual_commands.txt              # suggested follow-ups
+cat ~/results/<target>/report/proof-findings.md                 # consolidated findings
+```
+
+The program and the Docker image are the same binary with two environment presets, so flags never differ between host and container.
+
 ## Docker
 
 The Dockerfile builds this checkout using Kali tools. The image has no wrapper script: the container entrypoint **is** the `autorecon` CLI, preset with two environment variables (`AUTORECON_RESULTS=/results`, `AUTORECON_PORTAL_HOST=0.0.0.0`), so Docker behaves exactly like a local install — one command runs the scan, starts the web portal, and creates the results directory if needed. Mount a host results directory to keep the output after the container exits — Docker creates it automatically when missing:
 
 ```bash
-docker build -t autorecon .
+docker build --platform linux/amd64 -t autorecon .
 docker run --rm -p 127.0.0.1:8787:8787 -v "$HOME/results:/results" autorecon 192.0.2.10
 ```
 
@@ -133,10 +259,10 @@ Run the verifier for one origin without a full scan:
 autorecon-proof --allow-origin http://192.0.2.10:8080 --output proof-evidence.json
 ```
 
-Select specific modules (default: all):
+Select specific modules (default: all six; `ssrf` and `xxe` need `--oob`):
 
 ```bash
-autorecon-proof --allow-origin http://192.0.2.10:8080 --output proof-evidence.json --module ssti --module command-injection --module sqli --module lfi
+autorecon-proof --allow-origin http://192.0.2.10:8080 --output proof-evidence.json --module ssti --module command-injection --module sqli --module lfi --module ssrf --module xxe
 ```
 
 Use `--proof-web-probes.manifest` during a scan to select exact URLs and parameters, `--proof-web-probes.modules` to select modules, or `--proof-web-probes.headers-file` for authenticated web headers. Run `autorecon-proof --help` for the standalone equivalents. Review evidence before sharing it.
