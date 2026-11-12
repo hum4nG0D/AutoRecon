@@ -1,7 +1,26 @@
-import asyncio, inspect, os, shlex
+import asyncio, inspect, os, shlex, time
 from typing import final
 from autorecon.config import config
 from autorecon.io import e, info, warn, error
+
+
+async def wait_for_command(process, stdout, stderr, drain_seconds=2.0):
+	"""Block until a command's streams finish, even if orphan processes hold the pipes.
+
+	Normally the streams end when the command exits. If a grandchild outlives
+	the shell (e.g. a tool that daemonizes), the pipes would stay open forever;
+	once the process itself has exited, give the streams a short bounded drain
+	and then move on.
+	"""
+	deadline = None
+	while not (stdout.ended and stderr.ended):
+		if process.returncode is not None:
+			if deadline is None:
+				deadline = time.monotonic() + drain_seconds
+			elif time.monotonic() >= deadline:
+				break
+		await asyncio.sleep(0.1)
+	await process.wait()
 
 
 def command_text_outputs(command):
@@ -112,9 +131,7 @@ class Target:
 
 		# If process should block, sleep until stdout and stderr have finished.
 		if blocking:
-			while (not (stdout.ended and stderr.ended)):
-				await asyncio.sleep(0.1)
-			await process.wait()
+			await wait_for_command(process, stdout, stderr)
 
 		return process, stdout, stderr
 
@@ -235,8 +252,6 @@ class Service:
 
 		# If process should block, sleep until stdout and stderr have finished.
 		if blocking:
-			while (not (stdout.ended and stderr.ended)):
-				await asyncio.sleep(0.1)
-			await process.wait()
+			await wait_for_command(process, stdout, stderr)
 
 		return process, stdout, stderr

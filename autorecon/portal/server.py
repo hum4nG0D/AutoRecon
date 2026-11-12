@@ -41,11 +41,15 @@ def valid_target(value):
 def tasks_from_events(events):
 	tasks = {}
 	terminal = None
+	ai_counts = {}
 	for item in events:
 		if item.get('event') in ('run_timed_out', 'run_cancelled', 'run_failed',
 		                         'target_timed_out', 'target_failed'):
 			terminal = item
 		key = item.get('task_id')
+		# AI review emits one task per reviewed section; collapse to a single task.
+		if item.get('category') == 'ai' and key:
+			key = str(item.get('target') or '') + '/ai'
 		if not key:
 			continue
 		task = tasks.setdefault(key, {
@@ -54,6 +58,8 @@ def tasks_from_events(events):
 			'status': 'queued', 'started_at': None, 'finished_at': None,
 			'detail': None, 'outputs': [],
 		})
+		if item.get('category') == 'ai' and not task.get('plugin'):
+			task['plugin'] = 'ai review'
 		event = item.get('event')
 		if event == 'task_started':
 			task['status'] = 'running'
@@ -61,6 +67,9 @@ def tasks_from_events(events):
 		elif event in ('task_completed', 'task_failed', 'task_skipped', 'task_cancelled'):
 			task['status'] = event.split('_', 1)[1]
 			task['finished_at'] = item.get('timestamp')
+			if item.get('category') == 'ai' and event == 'task_completed':
+				ai_counts[key] = ai_counts.get(key, 0) + 1
+				task['detail'] = 'Reviewed {} section(s)'.format(ai_counts[key])
 		if item.get('detail'):
 			task['detail'] = item['detail']
 		if isinstance(item.get('outputs'), list):
@@ -72,6 +81,28 @@ def tasks_from_events(events):
 				task['finished_at'] = terminal.get('timestamp')
 				task['detail'] = task['detail'] or 'Scan stopped before this task completed.'
 	return list(tasks.values())
+
+
+def logs_from_events(events, limit=200):
+	"""Extract the live progress feed (port discoveries, heartbeats) from events."""
+	logs = []
+	for item in events:
+		event = item.get('event')
+		if event == 'port_discovered':
+			plugin = item.get('plugin')
+			prefix = '[{}/{}] '.format(item.get('target', '?'), plugin) if plugin else ''
+			service = ' ({})'.format(item['service']) if item.get('service') else ''
+			logs.append({'timestamp': item.get('timestamp'), 'kind': 'port',
+			             'message': prefix + 'Discovered open port {}/{}{} on {}'.format(
+			             	item.get('protocol', '?'), item.get('port', '?'), service,
+			             	item.get('target', '?'))})
+		elif event == 'heartbeat':
+			logs.append({'timestamp': item.get('timestamp'), 'kind': 'heartbeat',
+			             'message': item.get('message', '')})
+		elif event == 'note':
+			logs.append({'timestamp': item.get('timestamp'), 'kind': 'note',
+			             'message': item.get('message', '')})
+	return logs[-limit:]
 
 
 class Portal:
@@ -247,7 +278,8 @@ class Handler(BaseHTTPRequestHandler):
 				job = self.app.job(job_id)
 				if not job:
 					raise FileNotFoundError('Job not found.')
-				return self._json(200, {'job': job, 'tasks': tasks_from_events(self.app.all_events(job_id))})
+				return self._json(200, {'job': job, 'tasks': tasks_from_events(self.app.all_events(job_id)),
+				                        'logs': logs_from_events(self.app.all_events(job_id))})
 			if path == '/api/events':
 				job_id = query.get('job_id', [''])[0]
 				if not self.app.job(job_id):

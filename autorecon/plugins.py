@@ -1,4 +1,4 @@
-import asyncio, inspect, os, re, sys
+import asyncio, inspect, os, re, signal, sys
 from typing import final
 from autorecon.config import config
 from autorecon.io import slugify, info, warn, error, fail, CommandStreamReader
@@ -246,6 +246,7 @@ class AutoRecon(object):
 		self.cancelled = False
 		self.patterns = []
 		self.errors = False
+		self.pending_notes = []
 		self.lock = asyncio.Lock()
 		self.load_slug = None
 		self.load_module = None
@@ -368,16 +369,51 @@ class AutoRecon(object):
 		else:
 			combined_patterns = self.patterns
 
+		# start_new_session gives each command its own process group so the
+		# timeout watchdog can reach grandchildren, not just the shell.
 		process = await asyncio.create_subprocess_shell(
 			cmd,
 			stdin=open('/dev/null'),
 			stdout=asyncio.subprocess.PIPE,
-			stderr=asyncio.subprocess.PIPE)
+			stderr=asyncio.subprocess.PIPE,
+			limit=1048576,
+			start_new_session=True)
 
 		cout = CommandStreamReader(process.stdout, target, tag, patterns=combined_patterns, outfile=outfile)
 		cerr = CommandStreamReader(process.stderr, target, tag, patterns=combined_patterns, outfile=errfile)
 
 		asyncio.create_task(cout._read())
 		asyncio.create_task(cerr._read())
+		asyncio.create_task(self._enforce_tool_timeout(process, target, tag, cmd))
 
 		return process, cout, cerr
+
+	async def _enforce_tool_timeout(self, process, target, tag, cmd):
+		"""Terminate a plugin command that exceeds the configured tool time limit."""
+		timeout = config.get('tool_timeout') or 0
+		if timeout <= 0:
+			return
+		try:
+			await asyncio.wait_for(process.wait(), timeout=timeout * 60)
+		except asyncio.TimeoutError:
+			warn('{bright}[{yellow}' + target.address + '{crst}/{bgreen}' + tag + '{crst}]{rst} '
+				+ 'Tool time limit of {:.3g} min exceeded; terminating: '.format(timeout) + cmd)
+			self._terminate_process_group(process)
+			try:
+				await asyncio.wait_for(process.wait(), timeout=10)
+			except asyncio.TimeoutError:
+				self._kill_process_group(process)
+
+	@staticmethod
+	def _terminate_process_group(process):
+		try:
+			os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+		except (ProcessLookupError, PermissionError):
+			process.terminate()
+
+	@staticmethod
+	def _kill_process_group(process):
+		try:
+			os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+		except (ProcessLookupError, PermissionError):
+			process.kill()

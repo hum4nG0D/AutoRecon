@@ -87,8 +87,11 @@ def queue_scanner_task(coroutine, targets, category, plugin, service=None):
 		emit_event(target, 'task_queued', task_id=scan_task_id(target, category, plugin, service),
 			category=category, plugin=plugin.slug, **({'service': service} if service else {}))
 	task = asyncio.create_task(coroutine)
+	timed_out = False
 
 	def cancelled():
+		if timed_out:
+			return
 		for target in targets:
 			emit_event(target, 'task_cancelled', task_id=scan_task_id(target, category, plugin, service),
 				category=category, plugin=plugin.slug, **({'service': service} if service else {}))
@@ -97,7 +100,38 @@ def queue_scanner_task(coroutine, targets, category, plugin, service=None):
 		for target in targets:
 			target.scan_status = 'failed'
 
-	return watch_task(task, cancelled, failed)
+	watched = watch_task(task, cancelled, failed)
+
+	task_timeout = config.get('task_timeout') or 0
+	if task_timeout > 0:
+		async def enforce_task_timeout():
+			nonlocal timed_out
+			await asyncio.sleep(task_timeout * 60)
+			if task.done():
+				return
+			timed_out = True
+			warn('{byellow}Task time limit of ' + '{:.3g}'.format(task_timeout) + ' min exceeded; cancelling: '
+				+ (targets[0].address if targets else '?') + '/' + plugin.slug
+				+ (' (' + str(service) + ')' if service else '') + '{rst}')
+			key = (str(service) + '/' if service else '') + plugin.slug
+			if getattr(plugin, 'run_once_boolean', False):
+				key = plugin.slug
+			for target in targets:
+				running = target.running_tasks.get(key)
+				if running:
+					for process_dict in running.get('processes', []):
+						process = process_dict['process']
+						if process.returncode is None:
+							AutoRecon._terminate_process_group(process)
+			task.cancel()
+			for target in targets:
+				emit_event(target, 'task_failed', task_id=scan_task_id(target, category, plugin, service),
+					category=category, plugin=plugin.slug, **({'service': service} if service else {}),
+					detail='Task time limit of {:.3g} min exceeded'.format(task_timeout))
+				target.scan_status = 'failed'
+		asyncio.create_task(enforce_task_timeout())
+
+	return watched
 
 
 def selected_plugin(plugin, category):
@@ -186,37 +220,37 @@ async def start_heartbeat(target, period=60):
 		async with target.lock:
 			count = len(target.running_tasks)
 
-			if config['verbose'] >= 1:
-				tasks_list = []
-				for tag, task in target.running_tasks.items():
-					task_str = tag
+			tasks_list = []
+			for tag, task in target.running_tasks.items():
+				task_str = tag + ' (elapsed: ' + calculate_elapsed_time(task['start'], short=True) + ')'
 
-					if config['verbose'] >= 2:
-						processes = []
-						for process_dict in task['processes']:
-							if process_dict['process'].returncode is None:
-								processes.append(str(process_dict['process'].pid))
-								try:
-									for child in psutil.Process(process_dict['process'].pid).children(recursive=True):
-										processes.append(str(child.pid))
-								except psutil.NoSuchProcess:
-									pass
-						
-						if processes:
-							task_str += ' (PID' + ('s' if len(processes) > 1 else '') + ': ' + ', '.join(processes) + ')'
-						
-					tasks_list.append(task_str)
+				if config['verbose'] >= 2:
+					processes = []
+					for process_dict in task['processes']:
+						if process_dict['process'].returncode is None:
+							processes.append(str(process_dict['process'].pid))
+							try:
+								for child in psutil.Process(process_dict['process'].pid).children(recursive=True):
+									processes.append(str(child.pid))
+							except psutil.NoSuchProcess:
+								pass
 
-				tasks_list = ': {bblue}' + ', '.join(tasks_list) + '{rst}'
-			else:
-				tasks_list = ''
+					if processes:
+						task_str += ' (PID' + ('s' if len(processes) > 1 else '') + ': ' + ', '.join(processes) + ')'
+
+				tasks_list.append(task_str)
+
+			colored_tasks_list = (': {bblue}' + ', '.join(tasks_list) + '{rst}') if tasks_list else ''
+			plain_tasks_list = (': ' + ', '.join(tasks_list)) if tasks_list else ''
 
 			current_time = datetime.now().strftime('%H:%M:%S')
 
 			if count > 1:
-				info('{bgreen}' + current_time + '{rst} - There are {byellow}' + str(count) + '{rst} scans still running against {byellow}' + target.address + '{rst}' + tasks_list)
+				info('{bgreen}' + current_time + '{rst} - There are {byellow}' + str(count) + '{rst} scans still running against {byellow}' + target.address + '{rst}' + colored_tasks_list)
+				emit_event(target, 'heartbeat', message=current_time + ' - There are ' + str(count) + ' scans still running against ' + target.address + plain_tasks_list)
 			elif count == 1:
-				info('{bgreen}' + current_time + '{rst} - There is {byellow}1{rst} scan still running against {byellow}' + target.address + '{rst}' + tasks_list)
+				info('{bgreen}' + current_time + '{rst} - There is {byellow}1{rst} scan still running against {byellow}' + target.address + '{rst}' + colored_tasks_list)
+				emit_event(target, 'heartbeat', message=current_time + ' - There is 1 scan still running against ' + target.address + plain_tasks_list)
 
 async def keyboard():
 	input = ''
@@ -280,8 +314,10 @@ async def keyboard():
 
 							if count > 1:
 								info('{bgreen}' + current_time + '{rst} - There are {byellow}' + str(count) + '{rst} scans still running against {byellow}' + target.address + '{rst}' + tasks_list)
+								emit_event(target, 'heartbeat', message=current_time + ' - There are ' + str(count) + ' scans still running against ' + target.address)
 							elif count == 1:
 								info('{bgreen}' + current_time + '{rst} - There is {byellow}1{rst} scan still running against {byellow}' + target.address + '{rst}' + tasks_list)
+								emit_event(target, 'heartbeat', message=current_time + ' - There is 1 scan still running against ' + target.address)
 				else:
 					input = input[1:]
 		await asyncio.sleep(0.1)
@@ -680,7 +716,12 @@ async def scan_target(target):
 		autorecon.scanning_targets.append(target)
 
 	start_time = time.time()
+	if autorecon.pending_notes:
+		for note in autorecon.pending_notes:
+			emit_event(target, 'note', message=note)
+		autorecon.pending_notes = []
 	info('Scanning target {byellow}' + target.address + '{rst}')
+	emit_event(target, 'note', message='Scanning target ' + target.address)
 
 	timed_out = False
 	while pending:
@@ -1005,6 +1046,8 @@ async def run():
 	parser.add_argument('--heartbeat', action='store', type=int, help='Specifies the heartbeat interval (in seconds) for scan status messages. Default: %(default)s')
 	parser.add_argument('--timeout', action='store', type=int, help='Specifies the maximum amount of time in minutes that AutoRecon should run for. Default: %(default)s')
 	parser.add_argument('--target-timeout', action='store', type=int, help='Specifies the maximum amount of time in minutes that a target should be scanned for before abandoning it and moving on. Default: %(default)s')
+	parser.add_argument('--tool-timeout', action='store', type=float, metavar='MINUTES', help='Maximum number of minutes any single plugin command may run before AutoRecon terminates it. Default: %(default)s. Use 0 for no limit.')
+	parser.add_argument('--task-timeout', action='store', type=float, metavar='MINUTES', help='Maximum total number of minutes one plugin task may run (across all of its commands) before AutoRecon cancels it. Default: %(default)s. Use 0 for no limit.')
 	nmap_group = parser.add_mutually_exclusive_group()
 	nmap_group.add_argument('--nmap', action='store', help='Override the {nmap_extra} variable in scans. Default: %(default)s')
 	nmap_group.add_argument('--nmap-append', action='store', help='Append to the default {nmap_extra} variable in scans. Default: %(default)s')
@@ -1289,6 +1332,7 @@ async def run():
 					fail('Error: No ChatGPT models are available for AI review.')
 				args.ai_model = models[0][0]
 				info('{bmagenta}AI review{rst}: Using ChatGPT model {bblue}{model}{rst}.', model=args.ai_model)
+				autorecon.pending_notes.append('AI review: Using ChatGPT model ' + args.ai_model + '.')
 		except Exception as ex:
 			fail('Error: ChatGPT sign-in or model selection failed: ' + str(ex))
 
@@ -1657,6 +1701,7 @@ async def run():
 			if web_portal_pid:
 				web_portal_display = 'localhost' if web_portal_host == '0.0.0.0' else web_portal_host
 				info('Web portal: {bblue}http://' + web_portal_display + ':8787/{rst} (pid ' + str(web_portal_pid) + '; stop it with {byellow}autorecon stop{rst})')
+				autorecon.pending_notes.append('Web portal: http://' + web_portal_display + ':8787/ (pid ' + str(web_portal_pid) + '; stop it with autorecon stop)')
 		except Exception as ex:
 			warn('Web portal could not be started: ' + str(ex))
 

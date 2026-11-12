@@ -58,6 +58,9 @@ The default output root is `~/results` if `-o` is omitted. Suggested password te
 | `--dirbuster.tool gobuster` | Choose a directory enumeration tool; `feroxbuster` is the default. |
 | `--exclude-tags proof` | Skip the web proof plugin. |
 | `--force-services tcp/22/ssh` | Run service checks for a known service without port discovery. |
+| `--timeout 60` | Abandon the whole run after N minutes. |
+| `--target-timeout 30` | Abandon one target after N minutes. |
+| `--tool-timeout 20` | Terminate any single plugin command after N minutes (default 15; `0` = no limit). |
 | `-vv` | Show more console detail. |
 | `--accessible` | Use screen reader friendly console output. |
 
@@ -73,7 +76,7 @@ autorecon 192.0.2.10 -v                       # show commands as they run
 autorecon 192.0.2.10 -vv                      # full command detail
 autorecon 192.0.2.10 -o /tmp/engagement       # custom results root
 autorecon 192.0.2.10 --ports T:22,80,443,U:53 # specific ports only
-autorecon 192.0.2.10 --tags +signatures       # add signature scanning (opt-in)
+autorecon 192.0.2.10 --tags default,signatures       # add signature scanning (opt-in)
 autorecon 192.0.2.10 --exclude-tags proof,bruteforce
 autorecon -t targets.txt                      # scan a target list
 autorecon 10.0.0.0/24                         # CIDR range
@@ -116,9 +119,9 @@ The same knobs exist mid-scan as plugin flags: `--proof-web-probes.modules sqli 
 ### Signature scanning (nuclei)
 
 ```bash
-autorecon 192.0.2.10 --tags +signatures       # enable (nuclei self-updates each run)
+autorecon 192.0.2.10 --tags default,signatures       # enable (nuclei self-updates each run)
 
-autorecon 192.0.2.10 --tags +signatures \
+autorecon 192.0.2.10 --tags default,signatures \
     --signature-scan.severity critical high \
     --signature-scan.tags cve sqli \
     --signature-scan.templates /path/to/custom-templates \
@@ -134,7 +137,7 @@ autorecon 192.0.2.10 --tags +signatures \
 ### AI reports (ChatGPT plan)
 
 ```bash
-autorecon-ai login                     # one-time browser sign-in
+autorecon-ai login                     # one-time browser sign-in (run on the host, not in Docker)
 autorecon-ai status                    # check connection
 autorecon-ai models                    # list available models
 autorecon 192.0.2.10 --ai              # auto-review during the scan
@@ -145,6 +148,15 @@ autorecon-ai report ~/results/192.0.2.10
 less ~/results/192.0.2.10/report/ai-report-input.txt
 autorecon-ai report ~/results/192.0.2.10 --model <slug> --send
 autorecon-ai logout
+```
+
+In Docker, sign-in must happen on the host (the browser callback cannot reach a container), then mount the host config directory — note the path is platform-specific:
+
+```bash
+# Linux host:
+-v "$HOME/.config/AutoRecon:/root/.config/AutoRecon"
+# macOS host (platformdirs uses Application Support on macOS):
+-v "$HOME/Library/Application Support/AutoRecon:/root/.config/AutoRecon"
 ```
 
 ### Authenticated SSH checks
@@ -168,7 +180,7 @@ docker run --rm -p 127.0.0.1:8787:8787 -v "$HOME/results:/results" \
 
 docker run --rm -p 127.0.0.1:8787:8787 -v "$HOME/results:/results" \
     -v "$HOME/.config/AutoRecon:/root/.config/AutoRecon" \
-    autorecon 192.0.2.10 --ai --tags +signatures
+    autorecon 192.0.2.10 --ai --tags default,signatures
 
 docker run --rm -p 127.0.0.1:8787:8787 -v "$HOME/results:/results" autorecon portal
 
@@ -205,7 +217,7 @@ docker run --rm -p 127.0.0.1:8787:8787 -v "$HOME/results:/results" autorecon 192
 docker run --rm -p 127.0.0.1:8787:8787 -v "$HOME/results:/results" autorecon 192.0.2.10 --ai
 ```
 
-For `--ai`, connect ChatGPT on the host first and mount the session into the container: add `-v "$HOME/.config/AutoRecon:/root/.config/AutoRecon"`. Run the portal on its own with `docker run --rm -p 127.0.0.1:8787:8787 -v "$HOME/results:/results" autorecon portal`. On Linux you can add `--network host` and omit the `-p` flag.
+For `--ai`, connect ChatGPT on the host first and mount the session into the container (on macOS the host config dir is `~/Library/Application Support/AutoRecon`, not `~/.config/AutoRecon` — sign-in only works on the host, never inside a container): add `-v "$HOME/.config/AutoRecon:/root/.config/AutoRecon"` on Linux, or `-v "$HOME/Library/Application Support/AutoRecon:/root/.config/AutoRecon"` on macOS. Run the portal on its own with `docker run --rm -p 127.0.0.1:8787:8787 -v "$HOME/results:/results" autorecon portal`. On Linux you can add `--network host` and omit the `-p` flag.
 
 Stopping: the portal stops automatically when the scan ends (the container exits and takes the portal with it). `docker stop <container>` ends a detached container and its scan together. To stop just the portal inside a still-running container, use `docker exec <container> autorecon stop`.
 
@@ -293,8 +305,8 @@ Confirmed proof checks surface in three more places: the scan writes a consolida
 For detection breadth, the `signature-scan` plugin runs [nuclei](https://github.com/projectdiscovery/nuclei) (10,000+ community templates) against each HTTP service. It is **not** part of the default scan — enable it explicitly:
 
 ```bash
-autorecon <target> --tags +signatures
-docker run --rm -p 127.0.0.1:8787:8787 -v "$HOME/results:/results" autorecon <target> --tags +signatures
+autorecon <target> --tags default,signatures
+docker run --rm -p 127.0.0.1:8787:8787 -v "$HOME/results:/results" autorecon <target> --tags default,signatures
 ```
 
 On a native Kali install, install nuclei first (a `linux_amd64` binary from the [releases page](https://github.com/projectdiscovery/nuclei/releases), or `go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest`); the Docker image ships it.

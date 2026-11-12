@@ -32,6 +32,8 @@ class AllTCPPortScan(PortScan):
 				match = re.search('^Discovered open port ([0-9]+)/tcp', line)
 				if match:
 					target.info('Discovered open port {bmagenta}tcp/' + match.group(1) + '{rst} on {byellow}' + target.address + '{rst}', verbosity=1)
+					if target.event_writer is not None:
+						target.event_writer.emit('port_discovered', target=target.address, protocol='tcp', port=int(match.group(1)), plugin=self.slug)
 				service = target.extract_service(line)
 
 				if service:

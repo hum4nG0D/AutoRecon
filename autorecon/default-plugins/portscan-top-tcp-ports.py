@@ -25,6 +25,8 @@ class QuickTCPPortScan(PortScan):
 		services = await target.extract_services(stdout)
 
 		for service in services:
+			if target.event_writer is not None:
+				target.event_writer.emit('port_discovered', target=target.address, protocol=service.protocol, port=service.port, plugin=self.slug, service=service.name)
 			# Check if HTTP service appears to be WinRM. If so, override service name as wsman.
 			if service.name == 'http' and service.port in [5985, 5986]:
 				wsman = requests.get(('https' if service.secure else 'http') + '://' + target.address + ':' + str(service.port) + '/wsman', verify=False)

@@ -29,6 +29,8 @@ class Top100UDPPortScan(PortScan):
 					match = re.search('^Discovered open port ([0-9]+)/udp', line)
 					if match:
 						target.info('Discovered open port {bmagenta}udp/' + match.group(1) + '{rst} on {byellow}' + target.address + '{rst}', verbosity=1)
+						if target.event_writer is not None:
+							target.event_writer.emit('port_discovered', target=target.address, protocol='udp', port=int(match.group(1)), plugin=self.slug)
 					service = target.extract_service(line)
 					if service:
 						services.append(service)

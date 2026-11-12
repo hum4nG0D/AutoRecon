@@ -37,6 +37,7 @@ const state = {
   files: { reports: [], scans: [] },
   proof: { confirmed: 0, total: 0, findings: [] },
   tasks: [],
+  logs: [],
   view: "reports",
   primaryView: "results",
   events: null,
@@ -443,9 +444,11 @@ async function selectJob(id) {
   state.selectedJob = id;
   state.selectedTask = null;
   state.tasks = [];
+  state.logs = [];
   state.eventSequence = 0;
   renderJobs();
   renderTasks();
+  renderLog();
   await refreshTasks();
   if (state.selectedJob === id) watchJob(id);
 }
@@ -457,6 +460,8 @@ async function refreshTasks() {
     const data = await api.get(`/api/jobs/${encodeURIComponent(id)}`);
     if (state.selectedJob !== id) return;
     state.tasks = Array.isArray(data.tasks) ? data.tasks : [];
+    state.logs = Array.isArray(data.logs) ? data.logs : [];
+    renderLog();
     if (data.job) {
       const index = state.jobs.findIndex((job) => job.id === id);
       if (index >= 0) state.jobs[index] = data.job;
@@ -555,6 +560,9 @@ function watchJob(id) {
         if (sequence <= state.eventSequence) return;
         state.eventSequence = sequence;
       }
+      if (event.event === "port_discovered" || event.event === "heartbeat") {
+        appendLogEvent(event);
+      }
       updateTaskFromEvent(event);
       scheduleRefresh();
     } catch (_) {
@@ -564,9 +572,50 @@ function watchJob(id) {
   source.onerror = () => { scheduleRefresh(); };
 }
 
+function logMessageFromEvent(event) {
+  if (event.event === "port_discovered") {
+    const prefix = event.plugin ? `[${event.target}/${event.plugin}] ` : "";
+    return { timestamp: event.timestamp, kind: "port",
+             message: `${prefix}Discovered open port ${event.protocol}/${event.port} on ${event.target}` };
+  }
+  if (event.event === "heartbeat") {
+    return { timestamp: event.timestamp, kind: "heartbeat", message: event.message || "" };
+  }
+  return null;
+}
+
+function appendLogEvent(event) {
+  const entry = logMessageFromEvent(event);
+  if (!entry) return;
+  state.logs.push(entry);
+  if (state.logs.length > 200) state.logs = state.logs.slice(-200);
+  renderLog();
+}
+
+function renderLog() {
+  const body = $("live-log-body");
+  const count = $("live-log-count");
+  if (!body) return;
+  body.replaceChildren();
+  count.textContent = state.logs.length ? `${state.logs.length} lines` : "";
+  if (!state.logs.length) {
+    body.append(element("p", "quiet", "No progress events for this run yet."));
+    return;
+  }
+  for (const entry of state.logs) {
+    const style = entry.kind === "port" ? "log-port" : entry.kind === "heartbeat" ? "log-heartbeat" : "";
+    const line = element("div", style);
+    line.textContent = `[*] ${entry.message}`;
+    body.append(line);
+  }
+  body.scrollTop = body.scrollHeight;
+}
+
 function updateTaskFromEvent(event) {
   if (!event.task_id) return;
-  const index = state.tasks.findIndex((task) => task.task_id === event.task_id);
+  let taskId = event.task_id;
+  if (event.category === "ai") taskId = `${event.target}/ai`;
+  const index = state.tasks.findIndex((task) => task.task_id === taskId);
   const status = {
     task_queued: "queued",
     task_started: "running",
@@ -576,10 +625,10 @@ function updateTaskFromEvent(event) {
     task_cancelled: "cancelled",
   }[event.event];
   const fields = {
-    task_id: event.task_id,
+    task_id: taskId,
     target: event.target,
     category: event.category,
-    plugin: event.plugin,
+    plugin: event.plugin || (event.category === "ai" ? "ai review" : undefined),
     service: event.service,
     status,
     detail: event.detail,

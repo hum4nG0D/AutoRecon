@@ -105,10 +105,26 @@ class CommandStreamReader(object):
 		self.patterns = patterns or []
 		self.outfile = outfile
 		self.ended = False
+		self._last_error_message = None
+		self._error_repeat_count = 0
 
 		# Empty files that already exist.
 		if self.outfile != None:
 			with open(self.outfile, 'w'): pass
+
+	def _report_error_once(self, message):
+		"""Print an error, collapsing consecutive repeats into a summary line."""
+		if message == self._last_error_message:
+			self._error_repeat_count += 1
+			return
+		self._flush_repeated_errors()
+		self._last_error_message = message
+		error('{bright}[{yellow}' + self.target.address + '{crst}/{bgreen}' + self.tag + '{crst}]{rst} ' + message)
+
+	def _flush_repeated_errors(self):
+		if self._error_repeat_count:
+			error('{bright}[{yellow}' + self.target.address + '{crst}/{bgreen}' + self.tag + '{crst}]{rst} ... previous message repeated ' + str(self._error_repeat_count) + ' times')
+			self._error_repeat_count = 0
 
 	# Read lines from the stream until it ends.
 	async def _read(self):
@@ -118,7 +134,7 @@ class CommandStreamReader(object):
 			try:
 				line = (await self.stream.readline()).decode('utf8').rstrip()
 			except ValueError:
-				error('{bright}[{yellow}' + self.target.address + '{crst}/{bgreen}' + self.tag + '{crst}]{rst} A line was longer than 64 KiB and cannot be processed. Ignoring.')
+				self._report_error_once('A line was longer than 64 KiB and cannot be processed. Ignoring.')
 				continue
 
 			if line != '':
@@ -159,6 +175,7 @@ class CommandStreamReader(object):
 				with open(self.outfile, 'a') as writer:
 					writer.write(line + '\n')
 			self.lines.append(line)
+		self._flush_repeated_errors()
 		self.ended = True
 
 	# Read a line from the stream cache.

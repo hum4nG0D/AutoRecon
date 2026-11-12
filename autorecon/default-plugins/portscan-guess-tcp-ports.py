@@ -34,6 +34,8 @@ class GuessPortScan(PortScan):
 			if line is not None:
 				match = re.match('^Discovered open port ([0-9]+)/tcp', line)
 				if match:
+					if target.event_writer is not None:
+						target.event_writer.emit('port_discovered', target=target.address, protocol='tcp', port=int(match.group(1)), plugin=self.slug)
 					if match.group(1) in insecure_ports.keys():
 						await target.add_service(Service('tcp', match.group(1), insecure_ports[match.group(1)]))
 					elif match.group(1) in secure_ports.keys():
